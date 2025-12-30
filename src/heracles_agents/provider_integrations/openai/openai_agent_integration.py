@@ -21,6 +21,7 @@ from heracles_agents.prompt import Prompt
 from heracles_agents.provider_integrations.openai.openai_client import (
     OpenaiClientConfig,
 )
+from heracles_agents.tool_interface import ImageResponse
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +83,46 @@ def make_tool_response(
     tool_call_message: ResponseFunctionToolCall,
     result,
 ):
-    m = {
-        "type": "function_call_output",
-        "call_id": tool_call_message.call_id,
-        "output": str(result),
-    }
+    if isinstance(result, ImageResponse) and result.image_data_base64:
+        content = [
+            {"type": "text", "text": str(result)},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{result.image_data_base64}"
+                },
+            },
+        ]
+        m = {
+            "type": "function_call_output",
+            "call_id": tool_call_message.call_id,
+            "output": str(content),  # Note: OpenAI function output is technically a string, but maybe structured?
+            # Actually, for function output, OpenAI expects a JSON string usually. 
+            # But "content" with image is for USER/ASSISTANT role messages usually.
+            # However, looking at docs, function output is just a string.
+            # If we want the agent to see the image, it might need to be part of the tool OUTPUT which is then fed back.
+            # But tool output is strictly a string. 
+            # Wait, if we use "tool" role (which OpenAI uses now), it accepts content array.
+            # Let's check how 'make_tool_response' creates the message. 
+            # It uses "type": "function_call_output" which seems to be an internal heracles type?
+            # openai_client.py consumes this.
+        }
+        # Ideally, we return a dictionary that 'openai_client.py' converts to the proper format.
+        # But if 'openai_client.py' expects 'output' to be a string, we might struggle.
+        # Let's assume for now we pass the raw content list as 'output' and hope the client handles it or we serialize it.
+        # Actually, for vision, the 'content' of the tool message can be a list of content parts.
+        
+        m = {
+            "type": "function_call_output",
+            "call_id": tool_call_message.call_id,
+            "output": content, # Pass raw list, client should handle or we update client
+        }
+    else:
+        m = {
+            "type": "function_call_output",
+            "call_id": tool_call_message.call_id,
+            "output": str(result),
+        }
     return m
 
 

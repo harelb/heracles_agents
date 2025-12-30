@@ -15,6 +15,7 @@ from heracles_agents.prompt import Prompt
 from heracles_agents.provider_integrations.ollama.ollama_client import (
     OllamaClientConfig,
 )
+from heracles_agents.tool_interface import ImageResponse
 
 
 @dispatch
@@ -70,11 +71,20 @@ def make_tool_response(
     tool_call_message: Message.ToolCall,
     result,
 ):
-    m = {
-        "role": "tool",
-        "tool_name": tool_call_message.function.name,
-        "content": str(result),
-    }
+    if isinstance(result, ImageResponse) and result.image_data_base64:
+        # Ollama supports 'images' list in message
+        m = {
+            "role": "tool",
+            "tool_name": tool_call_message.function.name,
+            "content": str(result),
+            "images": [result.image_data_base64]
+        }
+    else:
+        m = {
+            "role": "tool",
+            "tool_name": tool_call_message.function.name,
+            "content": str(result),
+        }
     return m
 
 

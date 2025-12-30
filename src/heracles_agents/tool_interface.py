@@ -7,6 +7,17 @@ from pydantic import BaseModel, PrivateAttr, model_validator
 from heracles_agents.tool_registry import ToolRegistry
 
 
+class ImageResponse(str):
+    """
+    A response from a tool that includes an image.
+    Behaves like a string (returning the text content) but carries extra image data.
+    """
+    def __new__(cls, text_content, image_data_base64=None, image_path=None):
+        instance = super().__new__(cls, text_content)
+        instance.image_data_base64 = image_data_base64
+        instance.image_path = image_path
+        return instance
+
 def type_to_string(typ):
     match typ():
         case str():
