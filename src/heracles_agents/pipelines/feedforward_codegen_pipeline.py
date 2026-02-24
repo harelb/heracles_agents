@@ -13,9 +13,9 @@ from heracles_agents.llm_interface import (
     AnalyzedQuestion,
     AnalyzedQuestions,
     EvalQuestion,
-    LlmAgent,
     QuestionAnalysis,
 )
+from heracles_agents.llm_agent import AgentInfo
 from heracles_agents.pipelines.codegen_utils import (
     execute_generated_code,
     load_dsg,
@@ -28,11 +28,11 @@ logger = logging.getLogger(__name__)
 
 def generate_prompt(
     question: EvalQuestion,
-    agent_config: LlmAgent,
+    agent_config: AgentInfo,
     task_state_context: dict[str] = {},
     api_prompt: str = None,
 ):
-    prompt = copy.deepcopy(agent_config.agent_info.prompt_settings.base_prompt)
+    prompt = copy.deepcopy(agent_config.prompt_settings.base_prompt)
 
     if api_prompt:
         prompt.set_api_prompt(api_prompt)

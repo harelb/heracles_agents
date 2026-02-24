@@ -4,7 +4,6 @@ import math
 import spark_dsg
 
 from heracles_agents.dsg_interfaces import PythonDsgInterface
-from heracles_agents.tool_interface import FunctionParameter, ToolDescription
 from heracles_agents.tool_registry import ToolRegistry, register_tool
 from heracles_agents.tools.timeouts import FunctionTimeoutError, run_with_timeout
 
@@ -25,6 +24,13 @@ def execute_generated_code_timed(
 
 
 def execute_generated_code(python_code: str, dsg_interface: PythonDsgInterface = None):
+    """A tool for executing Python code on a 3D Scene graph. The code takes in a spark_dsg graph object G
+    
+    Args:
+        python_code: Python code to execute
+        dsg_interface: The database configuration (bound dynamically).
+    """
+
     # Extract code between <python>...</python> tags if present
     # python_code_match = re.search(r"<python>(.*?)</python>", python_code, re.DOTALL)
     # if not python_code_match:
@@ -57,15 +63,6 @@ def execute_generated_code(python_code: str, dsg_interface: PythonDsgInterface =
         return str(e)
 
 
-codegen_tool = ToolDescription(
-    name="codegen_execute",
-    description="A tool for executing Python code on a 3D Scene graph. The code takes in a spark_dsg graph object G",
-    parameters=[
-        FunctionParameter("python_code", str, "Python code to execute"),
-    ],
-    function=execute_generated_code,
-)
-
-register_tool(codegen_tool)
+register_tool(execute_generated_code, name="codegen_execute")
 print("Registered tools: ")
 print(ToolRegistry.registered_tool_summary())

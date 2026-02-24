@@ -2,7 +2,6 @@ import numpy as np
 import zmq
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from heracles_agents.tool_interface import FunctionParameter, ToolDescription
 from heracles_agents.tool_registry import ToolRegistry, register_tool
 
 context = zmq.Context()
@@ -26,12 +25,21 @@ class UtmToMapInfo(BaseModel):
 
 
 def send_waypoint_to_quad(
-    northing,
-    easting,
+    northing: float,
+    easting: float,
     zone: str = "18N",
     zmq_uri: str = None,
     utm_map_info: UtmToMapInfo = None,
-):
+) -> str:
+    """An interface for sending a waypoint to a quadrotor.
+    
+    Args:
+        northing: The northing value of the quadrotor UTM waypoint.
+        easting: The easting value of the quadrotor UTM waypoint.
+        zone: UTM zone (default: 18N)
+        zmq_uri: ZMQ URI to send commands to (bound dynamically).
+        utm_map_info: Map origin information (bound dynamically).
+    """
     if zone != "18N":
         raise ValueError("Currently only waypoints in zone 18N are supported")
 
@@ -57,20 +65,6 @@ def send_waypoint_to_quad(
     return f"Sent goal {data_to_send}"
 
 
-waypoint_tool = ToolDescription(
-    name="send_waypoint_to_quad",
-    description="An interface for sending a waypoint to a quadrotor.",
-    parameters=[
-        FunctionParameter(
-            "northing", float, "The northing value of the quadrotor UTM waypoint."
-        ),
-        FunctionParameter(
-            "easting", float, "The easting value of the quadrotor UTM waypoint."
-        ),
-    ],
-    function=send_waypoint_to_quad,
-)
-
-register_tool(waypoint_tool)
+register_tool(send_waypoint_to_quad)
 print("Registered tools: ")
 print(ToolRegistry.registered_tool_summary())

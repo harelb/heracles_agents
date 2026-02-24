@@ -1,11 +1,19 @@
 import ast
 import os
 
-from heracles_agents.tool_interface import FunctionParameter, ToolDescription
 from heracles_agents.tool_registry import ToolRegistry, register_tool
 
 
-def send_pddl(pddl_goal_string, robot_name: str = None, planner_topic: str = None):
+def send_pddl(pddl_goal_string: str, robot_name: str = None, planner_topic: str = None) -> str:
+    """An interface for sending a PDDL goal to a robot.
+    Use this to interact with a robot and send commands that the user requests.
+    Please ask the user for confirmation before sending the pddl goal string.
+
+    Args:
+        pddl_goal_string: A PDDL goal to send to a robot.
+        robot_name: Name of the robot (bound dynamically).
+        planner_topic: ROS topic to publish to (bound dynamically).
+    """
     if robot_name is None or planner_topic is None:
         raise ValueError("send_pddl called with robot_name or planner_topic missing")
 
@@ -17,21 +25,20 @@ def send_pddl(pddl_goal_string, robot_name: str = None, planner_topic: str = Non
     return f"Sent goal {pddl_goal_string} to robot {robot_name} on {planner_topic}"
 
 
-pddl_tool = ToolDescription(
-    name="send_pddl_goal",
-    description="An interface for sending a PDDL goal to a robot. Use this to interact with a robot and send commands that the user requests. Please ask the user for confirmation before sending the pddl goal string.",
-    parameters=[
-        FunctionParameter("pddl_goal_string", str, "A PDDL goal to send to a robot."),
-    ],
-    function=send_pddl,
-)
-
-register_tool(pddl_tool)
+register_tool(send_pddl, name="send_pddl_goal")
 print("Registered tools: ")
 print(ToolRegistry.registered_tool_summary())
 
 
-def send_multirobot_pddl(robot_name_to_pddl_goal, planner_topic: str = None):
+def send_multirobot_pddl(robot_name_to_pddl_goal: str, planner_topic: str = None) -> str:
+    """An interface for sending a PDDL goal to multiple named robots.
+    Use this to interact with multiple robots and send commands that the user requests.
+    Please ask the user for confirmation before sending the pddl goal dictionary.
+    
+    Args:
+        robot_name_to_pddl_goal: A string representing a Python dictionary mapping from robot name to PDDL goal.
+        planner_topic: ROS topic to publish to (bound dynamically).
+    """
     robot_name_to_pddl_goal_dict = ast.literal_eval(robot_name_to_pddl_goal)
     msg_string = "{single_robot_goals: ["
     for robot_name, goal in robot_name_to_pddl_goal_dict.items():
@@ -46,19 +53,6 @@ def send_multirobot_pddl(robot_name_to_pddl_goal, planner_topic: str = None):
     return f"Sent goal {cmd} on {planner_topic}"
 
 
-mr_pddl_tool = ToolDescription(
-    name="send_multirobot_pddl_goal",
-    description="An interface for sending a PDDL goal to multiple named robots. Use this to interact with multiple robots and send commands that the user requests. Please ask the user for confirmation before sending the pddl goal dictionary.",
-    parameters=[
-        FunctionParameter(
-            "robot_name_to_pddl_goal",
-            str,
-            "A string representing a Python dictionary mapping from robot name to PDDL goal.",
-        ),
-    ],
-    function=send_multirobot_pddl,
-)
-
-register_tool(mr_pddl_tool)
+register_tool(send_multirobot_pddl, name="send_multirobot_pddl_goal")
 print("Registered tools: ")
 print(ToolRegistry.registered_tool_summary())

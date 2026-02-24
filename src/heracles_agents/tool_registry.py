@@ -1,5 +1,5 @@
 import inspect
-
+from typing import Callable
 
 class ToolRegistry:
     tools = {}
@@ -12,7 +12,7 @@ class ToolRegistry:
     def get_arg_type(cls, tool_name, arg_name):
         if tool_name not in ToolRegistry.tools:
             raise ValueError(f"Tool {tool_name} is not present in the tool register")
-        fn = cls.tools[tool_name].function
+        fn = cls.tools[tool_name]
         signature = inspect.signature(fn)
         if arg_name not in signature.parameters:
             raise ValueError(f"{arg_name} is not a valid argument name for {tool_name}")
@@ -25,9 +25,9 @@ class ToolRegistry:
         return arg_type
 
 
-def register_tool(tool_description):
-    name = tool_description.name
-    if name in ToolRegistry.tools:
-        print(f"{name} already has registered function!")
+def register_tool(tool_function: Callable, name: str = None):
+    tool_name = name if name else tool_function.__name__
+    if tool_name in ToolRegistry.tools:
+        print(f"{tool_name} already has registered function!")
     else:
-        ToolRegistry.tools[name] = tool_description
+        ToolRegistry.tools[tool_name] = tool_function

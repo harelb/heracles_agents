@@ -12,9 +12,9 @@ from heracles_agents.llm_interface import (
     AnalyzedQuestion,
     AnalyzedQuestions,
     EvalQuestion,
-    LlmAgent,
     QuestionAnalysis,
 )
+from heracles_agents.llm_agent import AgentInfo
 from heracles_agents.pipelines.comparisons import evaluate_answer
 from heracles_agents.pipelines.in_context_utils import scene_graph_to_prompt
 from heracles_agents.pipelines.prompt_utils import get_answer_formatting_guidance
@@ -25,12 +25,16 @@ logger = logging.getLogger(__name__)
 def generate_prompt(
     incontext_dsg_interface,
     question: EvalQuestion,
-    agent_config: LlmAgent,
+    agent_config: AgentInfo,
     task_state_context: dict[str] = {},
 ):
-    prompt = copy.deepcopy(agent_config.agent_info.prompt_settings.base_prompt)
+    prompt = copy.deepcopy(agent_config.prompt_settings.base_prompt)
 
     dsg_desciption = scene_graph_to_prompt(incontext_dsg_interface.get_dsg())
+    if agent_config.tool_interface == "custom":
+        prompt.tool_description = "\n".join(
+            [t.to_custom() for t in agent_config.tools]
+        )
     try:
         prompt.novel_instruction = prompt.novel_instruction_template.format(
             question=question.question, dsg_description=dsg_desciption

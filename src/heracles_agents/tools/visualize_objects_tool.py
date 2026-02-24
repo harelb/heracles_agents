@@ -1,11 +1,21 @@
 import os
 import time
 
-from heracles_agents.tool_interface import FunctionParameter, ToolDescription
 from heracles_agents.tool_registry import ToolRegistry, register_tool
 
 
-def visualize_objects(objects: str, x: str, y: str, clear: bool, viz_topic: str = None):
+def visualize_objects(objects: str, x: str, y: str, clear: bool, viz_topic: str = None) -> str:
+    """An interface for visualizing scene graph objects on RViz.
+    Use this to visualize node symbols at given locations to RViz for the user.
+    Also use this to clear the visualization.
+
+    Args:
+        objects: A comma-separated list of node symbols visualize.
+        x: A comma-separated list x-coordinates for the corresponding node symbol. The number of node symbols must match the number of x-coordinates.
+        y: A comma-separated list y-coordinates for the corresponding node symbol. The number of node symbols must match the number of y-coordinates.
+        clear: If True, it will clear the visualization and do nothing else. If False, it will visualize the given objects.
+        viz_topic: ROS topic to publish to (bound dynamically).
+    """
     if viz_topic is None:
         raise ValueError("visualize_objects called with viz_topic missing")
 
@@ -84,32 +94,6 @@ def visualize_objects(objects: str, x: str, y: str, clear: bool, viz_topic: str 
     return f"Visualized the following objects in RViz: {object_list}."
 
 
-viz_objects_tool = ToolDescription(
-    name="visualize_objects",
-    description="An interface for visualizing scene graph objects on RViz. Use this to visualize node symbols at given locations to RViz for the user. Also use this to clear the visualization.",
-    parameters=[
-        FunctionParameter(
-            "objects", str, "A comma-separated list of node symbols visualize."
-        ),
-        FunctionParameter(
-            "x",
-            str,
-            "A comma-separated list x-coordinates for the corresponding node symbol. The number of node symbols must match the number of x-coordinates.",
-        ),
-        FunctionParameter(
-            "y",
-            str,
-            "A comma-separated list y-coordinates for the corresponding node symbol. The number of node symbols must match the number of y-coordinates.",
-        ),
-        FunctionParameter(
-            "clear",
-            bool,
-            "If True, it will clear the visualization and do nothing else. If False, it will visualize the given objects.",
-        ),
-    ],
-    function=visualize_objects,
-)
-
-register_tool(viz_objects_tool)
+register_tool(visualize_objects)
 print("Registered tools:")
 print(ToolRegistry.registered_tool_summary())

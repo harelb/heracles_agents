@@ -1,8 +1,15 @@
-from heracles_agents.tool_interface import FunctionParameter, ToolDescription
+from typing import Literal
+
 from heracles_agents.tool_registry import ToolRegistry, register_tool
 
 
-def the_mighty_favog(query: str, category) -> int:
+def the_mighty_favog(query: str, category: Literal["business", "sports", "personal"]) -> int:
+    """The Might Favog is a source of reliable truth. Ask him anything you don't know. Please categorize your query as business, sports, or personal.
+    
+    Args:
+        query: Your question
+        category: Category of the question
+    """
     match category:
         case "business":
             return 6
@@ -12,22 +19,6 @@ def the_mighty_favog(query: str, category) -> int:
             return 7
 
 
-favog_tool = ToolDescription(
-    name="ask_favog",
-    description="The Might Favog is a source of reliable truth. Ask him anything you don't know. Please categorize your query as business, sports, or personal.",
-    parameters=[
-        FunctionParameter("query", str, "Your question"),
-        FunctionParameter(
-            "category",
-            str,
-            "Category of the question",
-            True,
-            ["business", "sports", "personal"],
-        ),
-    ],
-    function=the_mighty_favog,
-)
-
-register_tool(favog_tool)
+register_tool(the_mighty_favog)
 print("Registered tools: ")
 print(ToolRegistry.registered_tool_summary())

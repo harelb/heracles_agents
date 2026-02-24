@@ -7,7 +7,7 @@ from pydantic import BaseModel, ValidationError
 
 from heracles.query_interface import Neo4jWrapper
 from heracles_agents.dsg_interfaces import HeraclesDsgInterface
-from heracles_agents.tool_interface import FunctionParameter, ToolDescription, ImageResponse
+from heracles_agents.tool_interface import ImageResponse
 from heracles_agents.tool_registry import ToolRegistry, register_tool
 
 
@@ -143,16 +143,6 @@ def vlm_relocalize(node_symbol: str, prompt: str, dsgdb_conf: HeraclesDsgInterfa
     )
 
 
-vlm_tool = ToolDescription(
-    name="vlm_relocalize",
-    description="Localizes an object within a node's image using a generic VLM. Returns a verified bounding box and displays the image.",
-    parameters=[
-        FunctionParameter("node_symbol", str, " The Node Symbol (e.g. 'O_0') to inspect"),
-        FunctionParameter("prompt", str, "What to localize (e.g. 'red cup')"),
-    ],
-    function=vlm_relocalize,
-)
-
-register_tool(vlm_tool)
+register_tool(vlm_relocalize)
 print("Registered tools: ")
 print(ToolRegistry.registered_tool_summary())

@@ -1,11 +1,16 @@
 from heracles.query_interface import Neo4jWrapper
 
 from heracles_agents.dsg_interfaces import HeraclesDsgInterface
-from heracles_agents.tool_interface import FunctionParameter, ToolDescription
 from heracles_agents.tool_registry import ToolRegistry, register_tool
 
 
-def query_db(cypher_string, dsgdb_conf: HeraclesDsgInterface = None):
+def query_db(cypher_string: str, dsgdb_conf: HeraclesDsgInterface = None) -> str:
+    """An interface for running Cypher queries on a Neo4j database containing a 3D Scene Graph.
+    
+    Args:
+        cypher_string: Your Cypher query
+        dsgdb_conf: The database configuration (bound dynamically).
+    """
     if dsgdb_conf is None:
         raise ValueError(
             "query_db called with dsgdb_conf=None. Did you forget to bind the config to the tool?"
@@ -34,17 +39,6 @@ def query_db(cypher_string, dsgdb_conf: HeraclesDsgInterface = None):
             return query_result
 
 
-# TODO: we need to warp the query_db in another function that takes only the cypher string, and not the dsgdb_conf
-# Probably need to have the experiment runner automatically insert the experiment description into the tool call?
-cypher_tool = ToolDescription(
-    name="run_cypher_query",
-    description="An interface for running Cypher queries on a Neo4j database containing a 3D Scene Graph.",
-    parameters=[
-        FunctionParameter("cypher_string", str, "Your Cypher query"),
-    ],
-    function=query_db,
-)
-
-register_tool(cypher_tool)
+register_tool(query_db, name="run_cypher_query")
 print("Registered tools: ")
 print(ToolRegistry.registered_tool_summary())

@@ -1,9 +1,15 @@
-from heracles_agents.tool_interface import FunctionParameter, ToolDescription
+from typing import Literal
+
 from heracles_agents.tool_registry import register_tool
 
-
-def test_calculator(a: float, b: float, operation: str = "add") -> float:
-    """A simple calculator tool for testing."""
+def test_calculator(a: float, b: float, operation: Literal["add", "subtract", "multiply", "divide"] = "add") -> float:
+    """Perform basic arithmetic operations
+    
+    Args:
+        a: First number
+        b: Second number
+        operation: The operation to perform
+    """
     match operation:
         case "add":
             return a + b
@@ -16,22 +22,4 @@ def test_calculator(a: float, b: float, operation: str = "add") -> float:
         case _:
             raise ValueError(f"Unknown operation: {operation}")
 
-
-calculator_tool = ToolDescription(
-    name="calculator",
-    description="Perform basic arithmetic operations",
-    parameters=[
-        FunctionParameter(
-            "operation",
-            str,
-            "The operation to perform",
-            True,
-            ["add", "subtract", "multiply", "divide"],
-        ),
-        FunctionParameter("a", float, "First number"),
-        FunctionParameter("b", float, "Second number"),
-    ],
-    function=test_calculator,
-)
-
-register_tool(calculator_tool)
+register_tool(test_calculator)

@@ -53,5 +53,5 @@ def get_answer_formatting_guidance_helper(prompt_settings, question):
 
 def get_answer_formatting_guidance(agent_config, question):
     return get_answer_formatting_guidance_helper(
-        agent_config.agent_info.prompt_settings, question
+        agent_config.prompt_settings, question
     )

@@ -11,6 +11,7 @@ setup(
     packages=find_packages("src"),
     package_data={"": ["*.yaml", "*.pddl", "*.lark"]},
     install_requires=[
+        "pydantic-ai",
         "pydantic-settings",
         "plum-dispatch",
         "lark",

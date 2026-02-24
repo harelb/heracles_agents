@@ -12,9 +12,9 @@ from heracles_agents.llm_interface import (
     AnalyzedQuestion,
     AnalyzedQuestions,
     EvalQuestion,
-    LlmAgent,
     QuestionAnalysis,
 )
+from heracles_agents.llm_agent import AgentInfo
 from heracles_agents.pipelines.comparisons import evaluate_answer
 from heracles_agents.pipelines.db_utils import query_db
 from heracles_agents.pipelines.prompt_utils import get_answer_formatting_guidance
@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 
 
 def generate_prompt(
-    question: EvalQuestion, agent_config: LlmAgent, task_state_context: dict[str] = {}
+    question: EvalQuestion, agent_config: AgentInfo, task_state_context: dict[str] = {}
 ):
-    prompt = copy.deepcopy(agent_config.agent_info.prompt_settings.base_prompt)
-    if agent_config.agent_info.tool_interface == "custom":
+    prompt = copy.deepcopy(agent_config.prompt_settings.base_prompt)
+    if agent_config.tool_interface == "custom":
         prompt.tool_description = "\n".join(
-            [t.to_custom() for t in agent_config.agent_info.tools]
+            [t.to_custom() for t in agent_config.tools]
         )
 
     try:

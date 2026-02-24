@@ -13,19 +13,10 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, Input, Label, RichLog, Rule, Static, TextArea
 
-from heracles_agents.llm_agent import LlmAgent
-from heracles_agents.llm_interface import AgentContext
+# Assuming you've already created this class. It might need to be created if missing
+from heracles_agents.llm_agent import create_agent, AgentInfo
 
 logger = logging.getLogger(__name__)
-
-
-def new_user_message(text):
-    return [{"role": "user", "content": text}]
-
-
-def generate_initial_prompt(agent: LlmAgent):
-    prompt = agent.agent_info.prompt_settings.base_prompt
-    return prompt
 
 
 class MyTextArea(TextArea):
@@ -40,9 +31,7 @@ class MyTextArea(TextArea):
 class InputDisplayApp(App):
     def __init__(self, agent):
         self.agent = agent
-        self.messages = generate_initial_prompt(agent).to_openai_json(
-            "Now you will interact with the user:"
-        )
+        self.message_history = []
         super().__init__()
 
     def compose(self) -> ComposeResult:
@@ -80,27 +69,32 @@ class InputDisplayApp(App):
         text_log.write("")
         input_text_box.text = ""
 
-        self.messages += new_user_message(input_text)
-        initial_length = len(self.messages)
-
-        cxt = AgentContext(self.agent)
-        cxt.history = self.messages
-
         def run_agent():
-            success, answer = cxt.run()
-            responses = cxt.get_agent_responses()
-            for r in responses[initial_length:]:
-                text_log.write(r.parsed_response)
+            try:
+                # Run the agent with the user's input and current history
+                result = self.agent.run_sync(input_text, message_history=self.message_history)
+                
+                # Update message history for next turn
+                self.message_history = result.all_messages()
+                
+                # Log any tool calls made
+                for msg in result.new_messages():
+                    if hasattr(msg, 'parts'):
+                        for part in msg.parts:
+                            part_type = type(part).__name__
+                            if 'ToolCall' in part_type:
+                                text_log.write(f"[italic cyan]System: Agent called tool '{part.tool_name}'[/]")
+                            elif 'ToolReturn' in part_type:
+                                text_log.write(f"[italic cyan]System: Tool '{part.tool_name}' returned: {part.content}[/]")
+                                
+                text_log.write(f"[bold green]Assistant:[/] {result.data}")
+                text_log.write("")
+            except Exception as e:
+                text_log.write(f"[bold red]Error:[/] {e}")
                 text_log.write("")
 
         thread = threading.Thread(target=run_agent)
         thread.start()
-
-        # success, answer = cxt.run()
-        # responses = cxt.get_agent_responses()
-        # for r in responses[initial_length:]:
-        #    text_log.write(r.parsed_response)
-        #    text_log.write("")
 
 
 if __name__ == "__main__":
@@ -157,6 +151,9 @@ if __name__ == "__main__":
 
     with open("agent_config.yaml", "r") as fo:
         yml = yaml.safe_load(fo)
-    agent = LlmAgent(**yml)
+        
+    # Build AgentInfo natively instead of the polymorphic LlmAgent
+    agent_info = AgentInfo(**yml["agent_info"])
+    agent = create_agent(agent_info)
     app = InputDisplayApp(agent)
     app.run()

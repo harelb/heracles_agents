@@ -15,7 +15,8 @@ from pydantic import (
 )
 
 from heracles_agents.dsg_interfaces import DsgInterfaceConfigType
-from heracles_agents.llm_interface import AnalyzedQuestions, EvalQuestion, LlmAgent
+from heracles_agents.llm_interface import AnalyzedQuestions, EvalQuestion
+from heracles_agents.llm_agent import AgentInfo
 from heracles_agents.pydantic_discriminated_dispatch import has_plum_generics
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class ExperimentConfiguration(BaseModel):
     # different model sizes or behaviors, this gives
     # more flexibility
     pipeline: PipelineDescription
-    phases: dict[str, LlmAgent]
+    phases: dict[str, AgentInfo]
     dsg_interface: DsgInterfaceConfigType = Field(discriminator="dsg_interface_type")
     questions: list[EvalQuestion]
 
