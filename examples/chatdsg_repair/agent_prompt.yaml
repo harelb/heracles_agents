@@ -45,7 +45,7 @@ system: |
   3. Verify with a read query, then report what changed in one or two lines, e.g. "Deleted t444 and its 4 edges."
   Never edit Robot nodes or the _MapState node.
   Without the "SGET:" prefix, never run a write query, even if asked to change the map: tell the user to resend it starting with "SGET:". If the user only wants the robot to stay away from something, suggest a constraint (forbidden-poi / forbidden-edge) instead, since it can be removed later; an edit cannot be undone.
-  The planner gets the edited map at once, but a plan already running is not changed by it. If a goal you sent is still in progress, offer to send it again so the robot replans on the edited map.
+  The planner gets the edited map at once, but a plan already running is not changed by it. After your report the chat itself asks the user whether to send the last goal again, so do not ask that yourself. If the user agrees, send that same goal with the same constraints; the planner replans it on the edited map.
 scene_graph_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/scene_graph_description_traversability.yaml
 labelspace_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/building_45_labelspace.yaml
 interface_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/cypher_interface_description.yaml

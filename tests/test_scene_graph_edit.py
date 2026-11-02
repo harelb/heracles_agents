@@ -9,6 +9,8 @@ from heracles_agents.scene_graph_edit import (
     gated,
     is_edit_request,
     is_write_query,
+    remembering,
+    resend_offer,
     turn_allows_edits,
 )
 
@@ -20,9 +22,11 @@ def query():
         lambda cypher_string, dsgdb_conf=None: ran.append(cypher_string) or "[]",
         bump=bumps.append,
     )
-    gate.allowed = False
+    gate.allowed = gate.wrote = False
+    gate.last_goal = None
     yield run, ran, bumps
-    gate.allowed = False
+    gate.allowed = gate.wrote = False
+    gate.last_goal = None
 
 
 def test_edit_requests():
@@ -60,7 +64,7 @@ def test_writes_run_for_sget_and_bump_the_map(query):
     run, ran, bumps = query
     gate.allowed = True
     run("MATCH (p:MeshPlace {nodeSymbol: 't444'}) DETACH DELETE p", dsgdb_conf="conf")
-    assert len(ran) == 1 and bumps == ["conf"]
+    assert len(ran) == 1 and bumps == ["conf"] and gate.wrote
 
 
 def test_robots_and_map_version_are_never_written(query):
@@ -69,3 +73,19 @@ def test_robots_and_map_version_are_never_written(query):
     assert run("MATCH (r:Robot) DETACH DELETE r") == PROTECTED
     assert run("MATCH (m:_MapState) SET m.version = 0") == PROTECTED
     assert ran == []
+
+
+def test_after_an_edit_the_last_goal_is_offered_again(query):
+    run, _, _ = query
+    send = remembering(lambda goal, **kw: f"Sent goal {goal}")
+    send("(visited-place t500)", constraints_json='[["forbidden-poi", "o3"]]')
+    gate.allowed = True
+    run("MATCH (p:MeshPlace {nodeSymbol: 't444'}) DETACH DELETE p")
+    assert gate.wrote
+    offer = resend_offer(gate.last_goal)
+    assert "(visited-place t500)" in offer and "forbidden-poi" in offer
+    assert "send this goal again" in offer
+
+
+def test_no_offer_without_a_goal_sent(query):
+    assert resend_offer(gate.last_goal) == ""

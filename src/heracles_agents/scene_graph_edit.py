@@ -7,7 +7,9 @@ EdiT) began; otherwise it is refused and the agent is told why. Robot nodes
 and the map version are never written by hand.
 
 After a write the map version is bumped, so the heracles publisher republishes
-the edited map at once instead of at its next period.
+the edited map at once instead of at its next period. A plan already running
+is not changed by the edit, so after an edit the chat offers to send the last
+goal again (resend_offer); the goal manager replans it on the edited map.
 """
 
 import functools
@@ -49,6 +51,21 @@ def is_write_query(cypher: str) -> bool:
 class EditGate:
     def __init__(self):
         self.allowed = False
+        self.wrote = False  # a write ran in this turn
+        self.last_goal = None  # (pddl_goal, constraints_json) last sent
+
+
+def resend_offer(last_goal) -> str:
+    """What the chat says after an edit: offer to replan the last goal."""
+    if last_goal is None:
+        return ""
+    goal, constraints = last_goal
+    with_constraints = f" with constraints {constraints}" if constraints else ""
+    return (
+        f"The map changed. The last goal sent was {goal}{with_constraints}. "
+        "A plan already running does not change with the map: shall I send "
+        "this goal again so the robot replans on the edited map?"
+    )
 
 
 gate = EditGate()
@@ -79,17 +96,42 @@ def gated(query_fn, bump=_bump_map_version):
             return PROTECTED
         result = query_fn(cypher_string, dsgdb_conf=dsgdb_conf)
         bump(dsgdb_conf)
+        gate.wrote = True
         return result
 
     return run
 
 
+def remembering(send_fn):
+    """send_pddl_goal_with_constraints's function, noting the goal it sends."""
+
+    @functools.wraps(send_fn)
+    def send(
+        pddl_goal_string, constraints_json="", robot_name=None, planner_topic=None
+    ):
+        result = send_fn(
+            pddl_goal_string,
+            constraints_json=constraints_json,
+            robot_name=robot_name,
+            planner_topic=planner_topic,
+        )
+        gate.last_goal = (pddl_goal_string, constraints_json)
+        return result
+
+    return send
+
+
 def install() -> None:
-    """Gate the registered run_cypher_query. Call before the LlmAgent is built."""
+    """Gate run_cypher_query and note sent goals. Call before the LlmAgent is built."""
     import heracles_agents.tools.cypher_query_tool  # noqa: F401  registers it
+    import heracles_agents.tools.pddl_repair_tool  # noqa: F401
     from heracles_agents.tool_registry import ToolRegistry
 
     tool = ToolRegistry.tools["run_cypher_query"]
     if not getattr(tool.function, "_sget_gated", False):
         tool.function = gated(tool.function)
         tool.function._sget_gated = True
+    tool = ToolRegistry.tools["send_pddl_goal_with_constraints"]
+    if not getattr(tool.function, "_sget_remembers", False):
+        tool.function = remembering(tool.function)
+        tool.function._sget_remembers = True

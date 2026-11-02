@@ -7,7 +7,8 @@ affects what the user asked for. Reports and user messages take turns: one
 arriving while the agent is busy waits, and waiting ones go in together.
 
 The scene graph is edited only for a message starting with "SGET:"; other
-turns cannot write to Neo4j (heracles_agents.scene_graph_edit).
+turns cannot write to Neo4j (heracles_agents.scene_graph_edit). After an edit
+the chat always offers to send the last goal again, so the robot replans.
 """
 
 # Register the repair tool before the agent loads
@@ -24,7 +25,12 @@ import heracles_agents.tools.pddl_repair_tool  # noqa: F401
 from heracles_agents.llm_agent import LlmAgent
 from heracles_agents.llm_interface import AgentContext
 from heracles_agents.scene_change_listener import SceneChangeListener
-from heracles_agents.scene_graph_edit import gate, install, turn_allows_edits
+from heracles_agents.scene_graph_edit import (
+    gate,
+    install,
+    resend_offer,
+    turn_allows_edits,
+)
 
 original = os.path.join(os.path.dirname(__file__), "..", "chatdsg", "chatdsg.py")
 spec = importlib.util.spec_from_file_location("chatdsg_original", original)
@@ -76,6 +82,7 @@ class RepairChatApp(mod.InputDisplayApp):
         contents, self._waiting = self._waiting, []
         content = "\n\n".join(contents)
         gate.allowed = turn_allows_edits(contents)
+        gate.wrote = False
         self.messages += mod.new_user_message(content)
         initial_length = len(self.messages)
         cxt = AgentContext(self.agent)
@@ -87,6 +94,12 @@ class RepairChatApp(mod.InputDisplayApp):
                 cxt.run()
                 for r in cxt.get_agent_responses()[initial_length:]:
                     self.call_from_thread(log.write, r.parsed_response)
+                    self.call_from_thread(log.write, "")
+                offer = resend_offer(gate.last_goal) if gate.wrote else ""
+                if offer:
+                    # In the history too, so a "yes" next turn is understood.
+                    self.messages.append({"role": "assistant", "content": offer})
+                    self.call_from_thread(log.write, offer)
                     self.call_from_thread(log.write, "")
             finally:
                 gate.allowed = False
