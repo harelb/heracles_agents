@@ -12,6 +12,11 @@ the map being published. Objects are added with add_scene_object, which writes
 them the way change detection does. After every write the map is built once,
 and if the edit broke it the agent is told so it can fix it.
 
+An edit changes the same map change detection does, so it is announced the
+same way: the objects it removed, added or moved go out as a scene change
+(source "sget/chat") through gate.report, and the planner judges them against
+the running plan -- a deleted object the plan picks pauses the robots.
+
 After a write the map version is bumped, so the heracles publisher republishes
 the edited map at once instead of at its next period. A plan already running
 is not changed by the edit, so after an edit the chat offers to send the last
@@ -19,6 +24,7 @@ goal again (resend_offer); the goal manager replans it on the edited map.
 """
 
 import functools
+import json
 import re
 from typing import Iterable
 
@@ -27,6 +33,8 @@ from heracles_agents.tool_interface import FunctionParameter, ToolDescription
 from heracles_agents.tool_registry import register_tool
 
 EDIT_PREFIX = "SGET:"
+SGET_SOURCE = "sget/chat"
+ADDED, REMOVED, MOVED = 0, 1, 2  # heracles_ros.scene_change
 
 _WRITE = re.compile(
     r"\b(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP|FOREACH|LOAD\s+CSV)\b"
@@ -83,14 +91,59 @@ class EditGate:
         self.allowed = False
         self.wrote = False  # a write ran in this turn
         self.last_goal = None  # (pddl_goal, constraints_json) last sent
+        # report(changes, map_version): announce what an edit changed.
+        self.report = None
+        # Goals are sent only once the user confirmed them: turn counts agent
+        # turns, user_turn says whether a user message (not only a scene change
+        # report) began this one, and pending is (goal key, turn shown).
+        self.turn = 0
+        self.user_turn = False
+        self.pending = None
+
+    def start_turn(self, user_turn: bool) -> None:
+        self.turn += 1
+        self.user_turn = user_turn
+        self.allowed = self.wrote = False
+
+    def show(self, goal, constraints) -> None:
+        """The user has been shown this goal: their next message may confirm it."""
+        self.pending = (goal_key(goal, constraints), self.turn)
 
 
-def resend_offer(last_goal) -> str:
+NOT_CONFIRMED = (
+    "NOT SENT: the user has not confirmed this goal yet. Show the user this "
+    "exact goal and constraints and ask them to confirm. Call the tool again "
+    "with the same goal once they say yes."
+)
+
+
+def goal_key(goal: str, constraints) -> tuple:
+    """A goal and its constraints, written the same way however they were typed."""
+    try:
+        facts = json.loads(constraints) if constraints else []
+    except ValueError:
+        facts = [str(constraints)]
+    facts = sorted(json.dumps([str(x).lower() for x in f]) for f in facts)
+    return " ".join((goal or "").lower().split()), tuple(facts)
+
+
+def goal_symbols(goal: str) -> list:
+    """The object and place ids a PDDL goal names, e.g. ["o16", "t4"]."""
+    return sorted(set(re.findall(r"\b[ot]\d+\b", goal or "")))
+
+
+def resend_offer(last_goal, missing=()) -> str:
     """What the chat says after an edit: offer to replan the last goal."""
     if last_goal is None:
         return ""
     goal, constraints = last_goal
     with_constraints = f" with constraints {constraints}" if constraints else ""
+    if missing:
+        return (
+            f"The map changed. The last goal sent was {goal}{with_constraints}, "
+            f"but {', '.join(missing)} is no longer in the map, so it cannot be "
+            "sent again as it is. What should the robot do instead?"
+        )
     return (
         f"The map changed. The last goal sent was {goal}{with_constraints}. "
         "A plan already running does not change with the map: shall I send "
@@ -111,11 +164,67 @@ def _connect(dsgdb_conf):
     return Neo4jWrapper(dsgdb_conf.uri, auth, atomic_queries=True)
 
 
-def _bump_map_version(dsgdb_conf) -> None:
+def _bump_map_version(dsgdb_conf) -> int:
     from heracles_ros.map_state import bump_map_version
 
     with _connect(dsgdb_conf) as db:
-        bump_map_version(db)
+        return bump_map_version(db)
+
+
+def _objects(dsgdb_conf) -> dict:
+    """{symbol: (class, (x, y, z))} of every object in the map."""
+    with _connect(dsgdb_conf) as db:
+        rows = db.query(
+            "MATCH (o:Object) RETURN o.nodeSymbol AS s, o.class AS c, o.center AS p"
+        )
+    return {
+        r["s"]: (
+            r["c"] or "",
+            None if r["p"] is None else (r["p"].x, r["p"].y, r["p"].z),
+        )
+        for r in rows
+    }
+
+
+def missing_symbols(symbols, dsgdb_conf) -> list:
+    """Which of these goal ids (o16, t4) the map no longer has."""
+    if not symbols:
+        return []
+    with _connect(dsgdb_conf) as db:
+        rows = db.query(
+            "MATCH (n) WHERE (n:Object OR n:MeshPlace) AND toLower(n.nodeSymbol) IN "
+            f"{[s.lower() for s in symbols]} RETURN toLower(n.nodeSymbol) AS s"
+        )
+    have = {r["s"] for r in rows}
+    return [s for s in symbols if s.lower() not in have]
+
+
+def object_changes(before: dict, after: dict, min_move_m: float = 0.05) -> list:
+    """What an edit did to the objects, as scene change records."""
+    changes = []
+    for sym, (label, old) in before.items():
+        if sym not in after:
+            changes.append(
+                {
+                    "kind": REMOVED,
+                    "symbol": sym,
+                    "label": label,
+                    "old": old,
+                    "new": None,
+                }
+            )
+            continue
+        new = after[sym][1]
+        if old and new and sum((a - b) ** 2 for a, b in zip(old, new)) > min_move_m**2:
+            changes.append(
+                {"kind": MOVED, "symbol": sym, "label": label, "old": old, "new": new}
+            )
+    for sym, (label, new) in after.items():
+        if sym not in before:
+            changes.append(
+                {"kind": ADDED, "symbol": sym, "label": label, "old": None, "new": new}
+            )
+    return changes
 
 
 def _map_problem(dsgdb_conf) -> str:
@@ -137,7 +246,7 @@ def broken_map_warning(problem: str) -> str:
     )
 
 
-def gated(query_fn, bump=_bump_map_version, check=_map_problem):
+def gated(query_fn, bump=_bump_map_version, check=_map_problem, objects=_objects):
     """run_cypher_query's function, refusing writes unless gate.allowed."""
 
     @functools.wraps(query_fn)
@@ -151,9 +260,14 @@ def gated(query_fn, bump=_bump_map_version, check=_map_problem):
             return PROTECTED
         if creates_map_node(cypher_string):
             return NO_HAND_CREATE
+        before = objects(dsgdb_conf) if gate.report else None
         result = query_fn(cypher_string, dsgdb_conf=dsgdb_conf)
-        bump(dsgdb_conf)
+        version = bump(dsgdb_conf)
         gate.wrote = True
+        if gate.report:
+            changes = object_changes(before, objects(dsgdb_conf))
+            if changes:
+                gate.report(changes, version)
         problem = check(dsgdb_conf)
         return f"{result}\n{broken_map_warning(problem)}" if problem else result
 
@@ -174,13 +288,16 @@ def add_scene_object(
     from heracles_ros.scene_change import add_object
 
     with _connect(dsgdb_conf) as db:
-        sym = add_object(db, "", object_class, (x, y, z))["symbol"]
+        added = add_object(db, "", object_class, (x, y, z))
+        sym = added["symbol"]
         rows = db.query(
             f"MATCH (p:MeshPlace)-[:CONTAINS]->(o:Object {{nodeSymbol: '{sym}'}}) "
             "RETURN p.nodeSymbol AS p"
         )
-        bump_map_version(db)
+        version = bump_map_version(db)
     gate.wrote = True
+    if gate.report:
+        gate.report([added], version)
     place = f", in place {rows[0]['p']}" if rows else ""
     return f"Added {sym} ({object_class}) at ({x}, {y}, {z}){place}."
 
@@ -202,13 +319,30 @@ add_object_tool = ToolDescription(
 )
 
 
-def remembering(send_fn):
-    """send_pddl_goal_with_constraints's function, noting the goal it sends."""
+def confirming(send_fn):
+    """send_pddl_goal_with_constraints's function, sending only confirmed goals.
+
+    A goal goes out only if it was shown to the user in an earlier turn and a
+    user message began this one; otherwise it is held as shown and the agent
+    is told to ask. So nothing is sent from a scene change report, or in the
+    turn that first proposes a goal.
+    """
 
     @functools.wraps(send_fn)
     def send(
         pddl_goal_string, constraints_json="", robot_name=None, planner_topic=None
     ):
+        key = goal_key(pddl_goal_string, constraints_json)
+        confirmed = (
+            gate.user_turn
+            and gate.pending is not None
+            and gate.pending[0] == key
+            and gate.pending[1] < gate.turn
+        )
+        if not confirmed:
+            gate.show(pddl_goal_string, constraints_json)
+            return NOT_CONFIRMED
+        gate.pending = None
         result = send_fn(
             pddl_goal_string,
             constraints_json=constraints_json,
@@ -222,7 +356,7 @@ def remembering(send_fn):
 
 
 def install() -> None:
-    """Gate map writes, add add_scene_object, note sent goals.
+    """Gate map writes, add add_scene_object, send only confirmed goals.
 
     Call before the LlmAgent is built.
     """
@@ -236,6 +370,6 @@ def install() -> None:
         tool.function._sget_gated = True
     register_tool(add_object_tool)
     tool = ToolRegistry.tools["send_pddl_goal_with_constraints"]
-    if not getattr(tool.function, "_sget_remembers", False):
-        tool.function = remembering(tool.function)
-        tool.function._sget_remembers = True
+    if not getattr(tool.function, "_sget_confirms", False):
+        tool.function = confirming(tool.function)
+        tool.function._sget_confirms = True

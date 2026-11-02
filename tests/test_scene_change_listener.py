@@ -47,3 +47,8 @@ def test_our_own_picks_and_places_are_not_reported():
 
 def test_an_empty_batch_is_not_reported():
     assert describe_scene_changes(NS(source="awcd/x", map_version=1, changes=[])) == ""
+
+
+def test_the_chats_own_edits_are_not_reported_back_to_it():
+    msg = NS(source="sget/chat", map_version=4, changes=[_c(1, "O16", "trash")])
+    assert describe_scene_changes(msg) == ""

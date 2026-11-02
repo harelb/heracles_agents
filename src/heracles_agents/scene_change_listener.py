@@ -7,7 +7,9 @@ short report, written for the LLM: what changed, the class, and where. The
 agent's prompt says how to judge such a report against what the user asked.
 
 Changes our own robots made (source "executor/<robot>": a pick or place the
-plan already accounts for) are not reported.
+plan already accounts for) are not reported, nor the chat's own map edits
+(source "sget/..."), which the agent made itself. Those edits are published
+here (publish_applied) so the planner judges them like any other change.
 """
 
 import threading
@@ -24,7 +26,7 @@ def _xy(p) -> str:
 
 def describe_scene_changes(msg) -> str:
     """A SceneChangeMsg as one report for the agent, or "" if there is nothing to tell."""
-    if msg.source.startswith("executor/") or not msg.changes:
+    if msg.source.startswith(("executor/", "sget/")) or not msg.changes:
         return ""
     lines = [
         f"{REPORT_PREFIX} Change detection updated the map "
@@ -68,6 +70,7 @@ class SceneChangeListener:
             rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
         self._node = rclpy.create_node("chat_agent_scene_changes")
         self._node.create_subscription(SceneChangeMsg, self.topic, self._on_msg, 10)
+        self._pub = self._node.create_publisher(SceneChangeMsg, self.topic, 10)
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
         self._thread = threading.Thread(target=self._executor.spin, daemon=True)
@@ -77,6 +80,13 @@ class SceneChangeListener:
         text = describe_scene_changes(msg)
         if text:
             self.on_report(text)
+
+    def publish_applied(self, changes, map_version, source="sget/chat") -> None:
+        """Announce changes the chat made to the map, as the writer does its own."""
+        from heracles_ros.scene_change_writer_node import applied_msg
+
+        stamp = self._node.get_clock().now().to_msg()
+        self._pub.publish(applied_msg(source, map_version, changes, stamp))
 
     def stop(self) -> None:
         import rclpy

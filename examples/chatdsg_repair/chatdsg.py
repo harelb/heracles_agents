@@ -24,10 +24,12 @@ from textual.widgets import RichLog
 import heracles_agents.tools.pddl_repair_tool  # noqa: F401
 from heracles_agents.llm_agent import LlmAgent
 from heracles_agents.llm_interface import AgentContext
-from heracles_agents.scene_change_listener import SceneChangeListener
+from heracles_agents.scene_change_listener import REPORT_PREFIX, SceneChangeListener
 from heracles_agents.scene_graph_edit import (
     gate,
+    goal_symbols,
     install,
+    missing_symbols,
     resend_offer,
     turn_allows_edits,
 )
@@ -51,6 +53,8 @@ class RepairChatApp(mod.InputDisplayApp):
 
     def on_mount(self) -> None:
         self._listener.start()
+        # Map edits go out as scene changes, so the planner checks the plan.
+        gate.report = self._listener.publish_applied
 
     def on_unmount(self) -> None:
         self._listener.stop()
@@ -81,8 +85,8 @@ class RepairChatApp(mod.InputDisplayApp):
         self._busy = True
         contents, self._waiting = self._waiting, []
         content = "\n\n".join(contents)
+        gate.start_turn(any(not c.startswith(REPORT_PREFIX) for c in contents))
         gate.allowed = turn_allows_edits(contents)
-        gate.wrote = False
         self.messages += mod.new_user_message(content)
         initial_length = len(self.messages)
         cxt = AgentContext(self.agent)
@@ -95,7 +99,15 @@ class RepairChatApp(mod.InputDisplayApp):
                 for r in cxt.get_agent_responses()[initial_length:]:
                     self.call_from_thread(log.write, r.parsed_response)
                     self.call_from_thread(log.write, "")
-                offer = resend_offer(gate.last_goal) if gate.wrote else ""
+                offer = ""
+                if gate.wrote and gate.last_goal is not None:
+                    conf = self.agent.agent_info.tools["run_cypher_query"]._bound_args
+                    missing = missing_symbols(
+                        goal_symbols(gate.last_goal[0]), conf["dsgdb_conf"]
+                    )
+                    offer = resend_offer(gate.last_goal, missing)
+                    if not missing:
+                        gate.show(*gate.last_goal)  # a "yes" next turn resends it
                 if offer:
                     # In the history too, so a "yes" next turn is understood.
                     self.messages.append({"role": "assistant", "content": offer})

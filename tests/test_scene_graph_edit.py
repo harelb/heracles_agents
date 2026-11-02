@@ -4,6 +4,7 @@ import pytest
 
 from heracles_agents.scene_graph_edit import (
     NO_HAND_CREATE,
+    NOT_CONFIRMED,
     PROTECTED,
     REFUSED,
     add_scene_object,
@@ -12,7 +13,8 @@ from heracles_agents.scene_graph_edit import (
     gated,
     is_edit_request,
     is_write_query,
-    remembering,
+    confirming,
+    object_changes,
     resend_offer,
     turn_allows_edits,
 )
@@ -26,11 +28,14 @@ def query():
         bump=bumps.append,
         check=lambda conf: "",
     )
-    gate.allowed = gate.wrote = False
-    gate.last_goal = None
+    _clear()
     yield run, ran, bumps
-    gate.allowed = gate.wrote = False
-    gate.last_goal = None
+    _clear()
+
+
+def _clear():
+    gate.allowed = gate.wrote = gate.user_turn = False
+    gate.last_goal = gate.pending = gate.report = None
 
 
 def test_edit_requests():
@@ -81,14 +86,20 @@ def test_robots_and_map_version_are_never_written(query):
 
 def test_after_an_edit_the_last_goal_is_offered_again(query):
     run, _, _ = query
-    send = remembering(lambda goal, **kw: f"Sent goal {goal}")
-    send("(visited-place t500)", constraints_json='[["forbidden-poi", "o3"]]')
+    send = confirming(lambda goal, **kw: f"Sent goal {goal}")
+    goal, constraints = "(visited-place t500)", '[["forbidden-poi", "o3"]]'
+    gate.start_turn(user_turn=True)
+    send(goal, constraints_json=constraints)  # proposed
+    gate.start_turn(user_turn=True)
+    send(goal, constraints_json=constraints)  # confirmed
     gate.allowed = True
     run("MATCH (p:MeshPlace {nodeSymbol: 't444'}) DETACH DELETE p")
     assert gate.wrote
     offer = resend_offer(gate.last_goal)
     assert "(visited-place t500)" in offer and "forbidden-poi" in offer
     assert "send this goal again" in offer
+    gone = resend_offer(gate.last_goal, missing=["o3"])
+    assert "o3 is no longer in the map" in gone and "send this goal again" not in gone
 
 
 def test_no_offer_without_a_goal_sent(query):
@@ -132,3 +143,71 @@ def test_an_edit_that_breaks_the_map_is_reported():
 def test_adding_an_object_needs_sget():
     gate.allowed = False
     assert add_scene_object("chair", 5.0, -8.0) == REFUSED
+
+
+def _sender():
+    sent = []
+    return confirming(lambda goal, **kw: sent.append(goal) or f"Sent goal {goal}"), sent
+
+
+def test_a_goal_is_sent_only_after_the_user_confirms_it(query):
+    send, sent = _sender()
+    gate.start_turn(user_turn=True)  # "bring the trash can to t4"
+    assert send("(object-in-place o4 t4)") == NOT_CONFIRMED
+    assert send("(object-in-place o4 t4)") == NOT_CONFIRMED  # same turn: still no
+    gate.start_turn(user_turn=True)  # "yes"
+    assert (
+        send("(object-in-place  O4 t4)", constraints_json="")
+        == "Sent goal (object-in-place  O4 t4)"
+    )
+    assert sent == ["(object-in-place  O4 t4)"] and gate.pending is None
+
+
+def test_a_changed_goal_needs_its_own_confirmation(query):
+    send, sent = _sender()
+    gate.start_turn(user_turn=True)
+    send("(visited-place t5)")
+    gate.start_turn(user_turn=True)  # "yes, but avoid o3"
+    assert (
+        send("(visited-place t5)", constraints_json='[["forbidden-poi", "o3"]]')
+        == NOT_CONFIRMED
+    )
+    assert sent == []
+
+
+def test_a_scene_change_report_never_sends(query):
+    send, sent = _sender()
+    gate.start_turn(user_turn=True)
+    send("(visited-object o8)")
+    gate.start_turn(user_turn=False)  # a report, not the user, began this turn
+    assert send("(visited-object o8)") == NOT_CONFIRMED and sent == []
+
+
+def test_an_edit_is_announced_as_a_scene_change(query):
+    run, _, _ = query
+    reports = []
+    maps = [
+        {"O16": ("trash", (1.0, 2.0, 0.0)), "O5": ("chair", (0.0, 0.0, 0.0))},
+        {"O5": ("chair", (3.0, 0.0, 0.0)), "O21": ("cone", (4.0, 4.0, 0.0))},
+    ]
+    run = gated(
+        lambda cypher_string, dsgdb_conf=None: "[]",
+        bump=lambda conf: 7,
+        check=lambda conf: "",
+        objects=lambda conf: maps.pop(0),
+    )
+    gate.allowed = True
+    gate.report = lambda changes, version: reports.append((changes, version))
+    run("MATCH (o:Object {nodeSymbol: 'O16'}) DETACH DELETE o")
+    ((changes, version),) = reports
+    assert version == 7
+    assert sorted((c["kind"], c["symbol"], c["label"]) for c in changes) == [
+        (0, "O21", "cone"),
+        (1, "O16", "trash"),
+        (2, "O5", "chair"),
+    ]
+
+
+def test_unchanged_objects_are_not_reported():
+    same = {"O1": ("chair", (1.0, 1.0, 0.0))}
+    assert object_changes(same, {"O1": ("chair", (1.01, 1.0, 0.0))}) == []
