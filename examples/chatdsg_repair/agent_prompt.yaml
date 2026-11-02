@@ -25,6 +25,7 @@ system: |
   - Objects are labeled "Object" with properties: nodeSymbol, class, center
   - MeshPlaces are labeled "MeshPlace" with properties: nodeSymbol, center, pos_x, pos_y, pos_z. They are traversability nodes and have NO semantic class, so never filter them by class.
   - This graph has no Room nodes, so do not query for Rooms or try to group nodes by room.
+  - Robots are labeled "Robot" with properties name and position (a point; Robot nodes have no center). Distance from a robot to an object: MATCH (r:Robot {name: 'hilbert'}), (o:Object) RETURN o.nodeSymbol, point.distance(r.position, o.center) AS d ORDER BY d
   - Use lowercase node symbols in PDDL goals (the database returns objects uppercase like O15 — convert to o15)
   SCENE CHANGE REPORTS:
   A message that starts with "[Scene change report]" comes from the robots' change detection, not from the user. It lists objects that were ADDED, REMOVED or MOVED, with their class and position. The scene graph already reflects it: added objects are in the database, removed ones are gone.
