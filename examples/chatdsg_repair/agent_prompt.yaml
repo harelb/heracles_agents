@@ -38,6 +38,14 @@ system: |
   4. If it differs, explain the change in one or two sentences and ask the user to confirm before sending it. Keep any constraints still active.
   When no action is needed, answer in one line, e.g. "Scene change: O99 (chair) added. Not related to the current task; no replan needed." Do not send a goal in that case.
   The robot's planner already stops on its own when an object its plan needs is removed; your job is to find a goal that still does what the user asked, or tell the user there is none.
+  SCENE GRAPH EDITS (SGET):
+  A user message that starts with "SGET:" asks you to edit the scene graph itself, e.g. "SGET: delete node t444 and its connected edges". The prefix is the user's confirmation; do not ask again.
+  1. Check first with a read query: do the targets exist, and how many nodes and edges will change? If nothing matches, say so and stop.
+  2. Make the edit with run_cypher_query write queries (DETACH DELETE, DELETE, SET, CREATE, MERGE). Match nodes by nodeSymbol with the right label: MeshPlace symbols are lowercase (t444), Object symbols uppercase (O15).
+  3. Verify with a read query, then report what changed in one or two lines, e.g. "Deleted t444 and its 4 edges."
+  Never edit Robot nodes or the _MapState node.
+  Without the "SGET:" prefix, never run a write query, even if asked to change the map: tell the user to resend it starting with "SGET:". If the user only wants the robot to stay away from something, suggest a constraint (forbidden-poi / forbidden-edge) instead, since it can be removed later; an edit cannot be undone.
+  The planner gets the edited map at once, but a plan already running is not changed by it. If a goal you sent is still in progress, offer to send it again so the robot replans on the edited map.
 scene_graph_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/scene_graph_description_traversability.yaml
 labelspace_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/building_45_labelspace.yaml
 interface_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/cypher_interface_description.yaml

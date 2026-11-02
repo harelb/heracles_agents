@@ -5,6 +5,9 @@ Also listens for scene changes (heracles_agents.scene_change_listener): each
 one is put to the agent as a report, so it can recheck whether the change
 affects what the user asked for. Reports and user messages take turns: one
 arriving while the agent is busy waits, and waiting ones go in together.
+
+The scene graph is edited only for a message starting with "SGET:"; other
+turns cannot write to Neo4j (heracles_agents.scene_graph_edit).
 """
 
 # Register the repair tool before the agent loads
@@ -21,11 +24,14 @@ import heracles_agents.tools.pddl_repair_tool  # noqa: F401
 from heracles_agents.llm_agent import LlmAgent
 from heracles_agents.llm_interface import AgentContext
 from heracles_agents.scene_change_listener import SceneChangeListener
+from heracles_agents.scene_graph_edit import gate, install, turn_allows_edits
 
 original = os.path.join(os.path.dirname(__file__), "..", "chatdsg", "chatdsg.py")
 spec = importlib.util.spec_from_file_location("chatdsg_original", original)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+install()  # gate map writes on SGET, before the agent binds its tools
 
 
 class RepairChatApp(mod.InputDisplayApp):
@@ -67,7 +73,9 @@ class RepairChatApp(mod.InputDisplayApp):
             self._busy = False
             return
         self._busy = True
-        content, self._waiting = "\n\n".join(self._waiting), []
+        contents, self._waiting = self._waiting, []
+        content = "\n\n".join(contents)
+        gate.allowed = turn_allows_edits(contents)
         self.messages += mod.new_user_message(content)
         initial_length = len(self.messages)
         cxt = AgentContext(self.agent)
@@ -81,6 +89,7 @@ class RepairChatApp(mod.InputDisplayApp):
                     self.call_from_thread(log.write, r.parsed_response)
                     self.call_from_thread(log.write, "")
             finally:
+                gate.allowed = False
                 self.call_from_thread(self._run_agent)  # next waiting turn, if any
 
         threading.Thread(target=run, daemon=True).start()
