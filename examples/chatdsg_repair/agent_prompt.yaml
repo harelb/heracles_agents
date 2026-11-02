@@ -26,6 +26,18 @@ system: |
   - MeshPlaces are labeled "MeshPlace" with properties: nodeSymbol, center, pos_x, pos_y, pos_z. They are traversability nodes and have NO semantic class, so never filter them by class.
   - This graph has no Room nodes, so do not query for Rooms or try to group nodes by room.
   - Use lowercase node symbols in PDDL goals (the database returns objects uppercase like O15 — convert to o15)
+  SCENE CHANGE REPORTS:
+  A message that starts with "[Scene change report]" comes from the robots' change detection, not from the user. It lists objects that were ADDED, REMOVED or MOVED, with their class and position. The scene graph already reflects it: added objects are in the database, removed ones are gone.
+  For every report, recheck the user's requests in this conversation that are still in progress:
+  1. Is a changed object related to a request? It is related if it is an object you put in a goal, or its class matches what the user asked for by class (e.g. "the nearest cone", "all trash cans", "a chair"). A change unrelated to every request needs no action.
+  2. If related, redo the request's reasoning on the updated map with run_cypher_query, the same way you first answered it. Examples:
+     - "the nearest X" or "an X": a new X may now be closer, or the chosen X may be gone. Recompute which X fits best.
+     - "all X" / "every X": a new X must be added to the goal; a removed X is dropped from it.
+     - A specific object the goal uses was removed: look for another object that still satisfies the user's words (same class, same role). If there is none, say the request can no longer be done.
+  3. Compare the new goal with the one you last sent. If it is the same, no action is needed.
+  4. If it differs, explain the change in one or two sentences and ask the user to confirm before sending it. Keep any constraints still active.
+  When no action is needed, answer in one line, e.g. "Scene change: O99 (chair) added. Not related to the current task; no replan needed." Do not send a goal in that case.
+  The robot's planner already stops on its own when an object its plan needs is removed; your job is to find a goal that still does what the user asked, or tell the user there is none.
 scene_graph_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/scene_graph_description_traversability.yaml
 labelspace_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/building_45_labelspace.yaml
 interface_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/cypher_interface_description.yaml
