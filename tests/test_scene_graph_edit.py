@@ -211,3 +211,17 @@ def test_an_edit_is_announced_as_a_scene_change(query):
 def test_unchanged_objects_are_not_reported():
     same = {"O1": ("chair", (1.0, 1.0, 0.0))}
     assert object_changes(same, {"O1": ("chair", (1.01, 1.0, 0.0))}) == []
+
+
+def test_adding_a_place_needs_sget():
+    from heracles_agents.scene_graph_edit import add_scene_place
+
+    gate.allowed = False
+    assert add_scene_place(29.4, -14.9, "t1104, t1405", "t999") == REFUSED
+
+
+def test_linking_existing_places_is_not_creating_one():
+    assert not creates_map_node(
+        "MATCH (a:MeshPlace {nodeSymbol: 't1'}), (b:MeshPlace {nodeSymbol: 't2'}) "
+        "CREATE (a)-[:MESH_PLACE_CONNECTED]->(b), (b)-[:MESH_PLACE_CONNECTED]->(a)"
+    )

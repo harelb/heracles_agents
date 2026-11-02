@@ -9,7 +9,8 @@ and the map version are never written by hand.
 Objects and places are not created by hand either: the published scene graph
 is built from attributes a Cypher CREATE leaves out, and one such node stops
 the map being published. Objects are added with add_scene_object, which writes
-them the way change detection does. After every write the map is built once,
+them the way change detection does, and places with add_scene_place, which
+copies a nearby place's attributes. After every write the map is built once,
 and if the edit broke it the agent is told so it can fix it.
 
 An edit changes the same map change detection does, so it is announced the
@@ -58,8 +59,8 @@ REFUSED = (
 PROTECTED = "Refused: Robot nodes and the map version are not edited by hand."
 NO_HAND_CREATE = (
     "Refused: objects and places are not created with Cypher, since the map "
-    "needs attributes a CREATE leaves out. Add an object with add_scene_object; "
-    "places cannot be added."
+    "needs attributes a CREATE leaves out. Add an object with add_scene_object "
+    "and a place with add_scene_place."
 )
 
 
@@ -319,6 +320,86 @@ add_object_tool = ToolDescription(
 )
 
 
+def add_scene_place(
+    x: float,
+    y: float,
+    connect_to: str,
+    symbol: str = "",
+    dsgdb_conf: HeraclesDsgInterface = None,
+) -> str:
+    """Add a traversable place, connected both ways to the places named (SGET only)."""
+    if not gate.allowed:
+        return REFUSED
+    from heracles_ros.map_state import bump_map_version
+
+    neighbours = [n.strip().lower() for n in connect_to.split(",") if n.strip()]
+    symbol = symbol.strip().lower()
+    if symbol and not re.fullmatch(r"t\d+", symbol):
+        return f"Refused: a place id is t followed by a number, not '{symbol}'."
+    with _connect(dsgdb_conf) as db:
+        known = {
+            r["s"]
+            for r in db.query(
+                "MATCH (p:MeshPlace) WHERE p.nodeSymbol IN "
+                f"{neighbours + [symbol]} RETURN p.nodeSymbol AS s"
+            )
+        }
+        if symbol in known:
+            return f"Refused: place {symbol} already exists."
+        missing = [n for n in neighbours if n not in known]
+        if not neighbours or missing:
+            return f"Refused: connect_to must name existing places; missing: {missing or 'none given'}."
+        if not symbol:
+            top = db.query(
+                "MATCH (p:MeshPlace) RETURN max(toInteger(substring(p.nodeSymbol, 1))) AS n"
+            )[0]["n"]
+            symbol = f"t{(top or 0) + 1}"
+        # A new place looks like its nearest neighbour (attribute type, clearance)
+        # except for where it is, so the scene graph can be built from it.
+        db.query(
+            "MATCH (src:MeshPlace) WITH src, "
+            f"(src.pos_x - {x})^2 + (src.pos_y - {y})^2 AS d ORDER BY d LIMIT 1 "
+            "CREATE (p:MeshPlace) SET p = properties(src), "
+            f"p.nodeSymbol = '{symbol}', p.center = point({{x: {x}, y: {y}, z: 0.0}}), "
+            f"p.pos_x = {x}, p.pos_y = {y}, p.pos_z = 0.0"
+        )
+        db.query(
+            f"MATCH (p:MeshPlace {{nodeSymbol: '{symbol}'}}), (q:MeshPlace) "
+            f"WHERE q.nodeSymbol IN {neighbours} "
+            "CREATE (p)-[:MESH_PLACE_CONNECTED]->(q), (q)-[:MESH_PLACE_CONNECTED]->(p)"
+        )
+        version = bump_map_version(db)
+    gate.wrote = True
+    problem = _map_problem(dsgdb_conf)
+    done = f"Added place {symbol} at ({x}, {y}), connected to {', '.join(neighbours)} (map_version {version})."
+    return f"{done}\n{broken_map_warning(problem)}" if problem else done
+
+
+add_place_tool = ToolDescription(
+    name="add_scene_place",
+    description=(
+        "Add a traversable place (MeshPlace) at a map position, connected both "
+        "ways to existing places. Only for a user message starting with 'SGET:'."
+    ),
+    parameters=[
+        FunctionParameter("x", float, "x position in the map frame (m)"),
+        FunctionParameter("y", float, "y position in the map frame (m)"),
+        FunctionParameter(
+            "connect_to",
+            str,
+            "Comma-separated places to connect it to, e.g. 't1104, t1405'",
+        ),
+        FunctionParameter(
+            "symbol",
+            str,
+            "Id for the new place, e.g. 't999'; empty for the next free one",
+            required=False,
+        ),
+    ],
+    function=add_scene_place,
+)
+
+
 def confirming(send_fn):
     """send_pddl_goal_with_constraints's function, sending only confirmed goals.
 
@@ -369,6 +450,7 @@ def install() -> None:
         tool.function = gated(tool.function)
         tool.function._sget_gated = True
     register_tool(add_object_tool)
+    register_tool(add_place_tool)
     tool = ToolRegistry.tools["send_pddl_goal_with_constraints"]
     if not getattr(tool.function, "_sget_confirms", False):
         tool.function = confirming(tool.function)
