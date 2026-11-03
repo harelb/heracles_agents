@@ -410,9 +410,9 @@ def confirming(send_fn):
     """
 
     @functools.wraps(send_fn)
-    def send(
-        pddl_goal_string, constraints_json="", robot_name=None, planner_topic=None
-    ):
+    def send(pddl_goal_string, constraints_json="", **kwargs):
+        # kwargs are the tool's bound args (robot_name, planner_topic,
+        # robot_name_env_var, ...), passed through as the config gives them.
         key = goal_key(pddl_goal_string, constraints_json)
         confirmed = (
             gate.user_turn
@@ -424,12 +424,7 @@ def confirming(send_fn):
             gate.show(pddl_goal_string, constraints_json)
             return NOT_CONFIRMED
         gate.pending = None
-        result = send_fn(
-            pddl_goal_string,
-            constraints_json=constraints_json,
-            robot_name=robot_name,
-            planner_topic=planner_topic,
-        )
+        result = send_fn(pddl_goal_string, constraints_json=constraints_json, **kwargs)
         gate.last_goal = (pddl_goal_string, constraints_json)
         return result
 

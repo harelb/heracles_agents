@@ -225,3 +225,32 @@ def test_linking_existing_places_is_not_creating_one():
         "MATCH (a:MeshPlace {nodeSymbol: 't1'}), (b:MeshPlace {nodeSymbol: 't2'}) "
         "CREATE (a)-[:MESH_PLACE_CONNECTED]->(b), (b)-[:MESH_PLACE_CONNECTED]->(a)"
     )
+
+
+def test_the_repair_chat_config_binds_args_the_tools_accept():
+    """Every bound arg in the chat config must be one its gated tool takes.
+
+    The confirm wrapper once listed its parameters by hand, so the config's
+    robot_name_env_var made every send raise inside the agent's thread: the
+    chat just stopped answering.
+    """
+    import inspect
+    import os
+
+    import yaml
+
+    from heracles_agents.scene_graph_edit import install
+    from heracles_agents.tool_registry import ToolRegistry
+
+    install()
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "examples", "chatdsg_repair", "agent_config.yaml"
+    )
+    with open(path) as fo:
+        tools = yaml.safe_load(fo)["agent_info"]["tools"]
+    for t in tools:
+        fn = ToolRegistry.tools[t["name"]].function
+        bound = dict.fromkeys(t.get("bound_args", {}), None)
+        # follow_wrapped=False: check the wrapper itself, not what it wraps.
+        sig = inspect.signature(fn, follow_wrapped=False)
+        sig.bind_partial(**bound)  # raises TypeError if not
