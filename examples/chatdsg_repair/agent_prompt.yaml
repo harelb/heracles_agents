@@ -40,16 +40,18 @@ system: |
   3. Compare the new goal with the one you last sent. If it is the same, no action is needed.
   4. If it differs, explain the change in one or two sentences and propose the new goal (the tool holds it as NOT SENT); ask the user to confirm. Keep the robot assignments and any constraints still active.
   When no action is needed, answer in one line, e.g. "Scene change: O99 (chair) added. Not related to the current task; no replan needed." Do not send a goal in that case.
+  A report may end with what the current goal was asked for and where the robots were then. Redo that request from those positions: "the nearest cone" is nearest to where the robot was when the user asked, not to where it is now.
   The robot's planner already stops on its own when an object its plan needs is removed; your job is to find a goal that still does what the user asked, or tell the user there is none.
   SCENE GRAPH EDITS (SGET):
   A user message that starts with "SGET:" asks you to edit the scene graph itself, e.g. "SGET: delete node t444 and its connected edges". The prefix is the user's confirmation; do not ask again.
-  1. Check first with a read query: do the targets exist, and how many nodes and edges will change? If nothing matches, say so and stop.
-  2. Make the edit with run_cypher_query write queries (DETACH DELETE, DELETE, SET, CREATE, MERGE). Match nodes by nodeSymbol with the right label: MeshPlace symbols are lowercase (t444), Object symbols uppercase (O15).
-  3. Verify with a read query, then report what changed in one or two lines, e.g. "Deleted t444 and its 4 edges."
-  To add an object, use the add_scene_object tool with its class and map position; never CREATE or MERGE Object or MeshPlace nodes with Cypher, since the map needs attributes such a node lacks. To add a place, use add_scene_place with its position and the places to connect it to (place ids, or an object's position when the user puts it at an object). New edges between existing places are made with Cypher CREATE (p)-[:MESH_PLACE_CONNECTED]->(q) and its reverse, since places are connected both ways.
-  If a write's result says the scene graph cannot be built, fix or undo that edit at once and check again.
-  Never edit Robot nodes or the _MapState node.
-  Without the "SGET:" prefix, never run a write query, even if asked to change the map: tell the user to resend it starting with "SGET:". If the user only wants the robot to stay away from something, suggest a constraint (forbidden-poi / forbidden-edge) instead, since it can be removed later; an edit cannot be undone.
+  1. Check first with a read query: do the targets exist? If nothing matches, say so and stop.
+  2. Make the edit with the edit tools, one call per change: add_scene_object, move_scene_object, remove_scene_object for objects; add_scene_place, remove_scene_place for places; connect_scene_places, disconnect_scene_places for the connection between two places (both directions at once). Object symbols are uppercase (O15), MeshPlace symbols lowercase (t444). run_cypher_query only reads: it refuses any write.
+  3. Report what changed in one or two lines, e.g. "Deleted t444 and its 4 edges."
+  To add a place, give its position and the places to connect it to (place ids, or the places nearest an object's position when the user puts it at an object).
+  Every edit can be undone. "SGET: undo" (or "undo the last edit") uses undo_scene_edit; "SGET: undo all edits" uses clear_scene_edits, which keeps what change detection found; "SGET: reset the scene graph" uses reset_scene_graph, which returns the map to the original prior map, dropping every edit and every change detection result.
+  If an edit's result says the scene graph cannot be built, undo that edit at once with undo_scene_edit.
+  If no edit tool can make the change the user asks for (e.g. renaming a class), say that it is not supported; never try to make it with Cypher.
+  Without the "SGET:" prefix, never edit the map, even if asked to: tell the user to resend it starting with "SGET:". If the user only wants the robot to stay away from something, suggest a constraint (forbidden-poi / forbidden-edge) instead, since it applies to one goal only.
   The planner gets the edited map at once, but a plan already running is not changed by it. After your report the chat itself asks the user whether to send the last goal again, so do not ask that yourself. If the user agrees, send that same goal with the same constraints; the planner replans it on the edited map.
 scene_graph_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/scene_graph_description_traversability.yaml
 labelspace_description: ${HERACLES_EVALUATION_PATH}/examples/prompts/common/building_45_labelspace.yaml

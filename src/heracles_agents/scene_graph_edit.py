@@ -1,17 +1,16 @@
 """Scene graph edits by language, only when the user asks with "SGET:".
 
-run_cypher_query can write to Neo4j, so whether the agent edits the map was up
-to the LLM. With the gate installed, a write query (DELETE, SET, CREATE, ...)
-runs only in a turn that a user message starting with "SGET:" (Scene Graph
-EdiT) began; otherwise it is refused and the agent is told why. Robot nodes
-and the map version are never written by hand.
+A user message starting with "SGET:" (Scene Graph EdiT) lets the agent edit
+the map in that turn, with the edit tools below: add, move or remove an
+object; add or remove a place; connect or disconnect two places; undo the
+last edit, undo every chat edit, or reset the map to the prior scene graph.
+Outside an SGET turn every edit tool refuses, and run_cypher_query only ever
+reads: an edit made with free Cypher could not be undone, and a node it made
+without the map's attributes could stop the map being published.
 
-Objects and places are not created by hand either: the published scene graph
-is built from attributes a Cypher CREATE leaves out, and one such node stops
-the map being published. Objects are added with add_scene_object, which writes
-them the way change detection does, and places with add_scene_place, which
-copies a nearby place's attributes. After every write the map is built once,
-and if the edit broke it the agent is told so it can fix it.
+Every edit is logged (heracles_ros.change_log, source "sget/chat"), so the
+scene change writer can rebuild the map from the prior scene graph without
+it: undo and reset are its services, which the chat calls (gate.call_writer).
 
 An edit changes the same map change detection does, so it is announced the
 same way: the objects it removed, added or moved go out as a scene change
@@ -43,24 +42,21 @@ _WRITE = re.compile(
     re.IGNORECASE,
 )
 _LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|//[^\n]*")
-_PROTECTED = re.compile(r":\s*(Robot|_MapState)\b")
-_CLAUSE = re.compile(
-    r"\b(CREATE|MERGE|OPTIONAL\s+MATCH|MATCH|WITH|RETURN|SET|DETACH|DELETE|REMOVE"
-    r"|UNWIND|CALL|FOREACH)\b",
-    re.IGNORECASE,
-)
-_MAP_NODE = re.compile(r"\(\s*\w*\s*:\s*(Object|MeshPlace)\b", re.IGNORECASE)
 
 REFUSED = (
     "Refused: this query would change the scene graph. Map edits run only for a "
     "user message that starts with 'SGET:'. Ask the user to resend the request "
     "as 'SGET: <what to change>'."
 )
-PROTECTED = "Refused: Robot nodes and the map version are not edited by hand."
-NO_HAND_CREATE = (
-    "Refused: objects and places are not created with Cypher, since the map "
-    "needs attributes a CREATE leaves out. Add an object with add_scene_object "
-    "and a place with add_scene_place."
+READ_ONLY = (
+    "Refused: run_cypher_query only reads the map. Edit it with the edit tools: "
+    "add_scene_object, move_scene_object, remove_scene_object, add_scene_place, "
+    "remove_scene_place, connect_scene_places, disconnect_scene_places; undo with "
+    "undo_scene_edit. If no tool does the edit, tell the user it is not supported."
+)
+REBUILDING = (
+    "Not done: the map is being rebuilt (an undo or reset is running). Try again "
+    "in a few seconds."
 )
 
 
@@ -78,15 +74,6 @@ def is_write_query(cypher: str) -> bool:
     return bool(_WRITE.search(_LITERAL.sub("''", cypher)))
 
 
-def creates_map_node(cypher: str) -> bool:
-    """Whether a CREATE or MERGE clause makes an Object or MeshPlace node."""
-    parts = _CLAUSE.split(_LITERAL.sub("''", cypher))
-    return any(
-        kw.upper() in ("CREATE", "MERGE") and _MAP_NODE.search(body)
-        for kw, body in zip(parts[1::2], parts[2::2])
-    )
-
-
 class EditGate:
     def __init__(self):
         self.allowed = False
@@ -94,12 +81,22 @@ class EditGate:
         self.last_goal = None  # (pddl_goal, constraints_json) last sent
         # report(changes, map_version): announce what an edit changed.
         self.report = None
+        # call_writer(service) -> (ok, message): a scene change writer service
+        # ("undo_last_edit", "clear_edits", "reset").
+        self.call_writer = None
         # Goals are sent only once the user confirmed them: turn counts agent
         # turns, user_turn says whether a user message (not only a scene change
         # report) began this one, and pending is (goal key, turn shown).
         self.turn = 0
         self.user_turn = False
         self.pending = None
+        # What a goal was asked for: context() returns {"request": the user's
+        # words, "robots": {name: (x, y)}} when a user turn proposes a goal, and
+        # the context of the goal last sent is kept, so a later replan can redo
+        # the request from where the robots were when it was asked.
+        self.context = None
+        self._proposed = {}  # goal key -> context
+        self.last_context = None
 
     def start_turn(self, user_turn: bool) -> None:
         self.turn += 1
@@ -108,7 +105,15 @@ class EditGate:
 
     def show(self, goal, constraints) -> None:
         """The user has been shown this goal: their next message may confirm it."""
-        self.pending = (goal_key(goal, constraints), self.turn)
+        key = goal_key(goal, constraints)
+        self.pending = (key, self.turn)
+        resent = self.last_goal is not None and goal_key(*self.last_goal) == key
+        if self.user_turn and not resent and self.context is not None:
+            self._proposed[key] = self.context()
+        else:
+            # Re-proposed after a scene change, or offered again after an edit:
+            # still the request the user first made.
+            self._proposed[key] = self.last_context
 
 
 NOT_CONFIRMED = (
@@ -126,6 +131,30 @@ def goal_key(goal: str, constraints) -> tuple:
         facts = [str(constraints)]
     facts = sorted(json.dumps([str(x).lower() for x in f]) for f in facts)
     return " ".join((goal or "").lower().split()), tuple(facts)
+
+
+def robot_positions(dsgdb_conf) -> dict:
+    """{robot: (x, y)} from the Robot nodes the state updater keeps in Neo4j."""
+    with _connect(dsgdb_conf) as db:
+        rows = db.query("MATCH (r:Robot) RETURN r.name AS n, r.position AS p")
+    return {r["n"]: (r["p"].x, r["p"].y) for r in rows if r["p"] is not None}
+
+
+def goal_context_note(context) -> str:
+    """For a scene change report: what the current goal was asked for, and from where."""
+    if not context:
+        return ""
+    where = ", ".join(
+        f"{name} at ({x:.1f}, {y:.1f})"
+        for name, (x, y) in sorted(context["robots"].items())
+    )
+    note = f'The current goal was asked for as: "{context["request"].strip()}".'
+    if where:
+        note += (
+            " If you redo it, measure distances (nearest, closest, ...) from where the "
+            f"robots were when it was asked: {where}; not from where they are now."
+        )
+    return note
 
 
 def goal_symbols(goal: str) -> list:
@@ -165,28 +194,6 @@ def _connect(dsgdb_conf):
     return Neo4jWrapper(dsgdb_conf.uri, auth, atomic_queries=True)
 
 
-def _bump_map_version(dsgdb_conf) -> int:
-    from heracles_ros.map_state import bump_map_version
-
-    with _connect(dsgdb_conf) as db:
-        return bump_map_version(db)
-
-
-def _objects(dsgdb_conf) -> dict:
-    """{symbol: (class, (x, y, z))} of every object in the map."""
-    with _connect(dsgdb_conf) as db:
-        rows = db.query(
-            "MATCH (o:Object) RETURN o.nodeSymbol AS s, o.class AS c, o.center AS p"
-        )
-    return {
-        r["s"]: (
-            r["c"] or "",
-            None if r["p"] is None else (r["p"].x, r["p"].y, r["p"].z),
-        )
-        for r in rows
-    }
-
-
 def missing_symbols(symbols, dsgdb_conf) -> list:
     """Which of these goal ids (o16, t4) the map no longer has."""
     if not symbols:
@@ -198,34 +205,6 @@ def missing_symbols(symbols, dsgdb_conf) -> list:
         )
     have = {r["s"] for r in rows}
     return [s for s in symbols if s.lower() not in have]
-
-
-def object_changes(before: dict, after: dict, min_move_m: float = 0.05) -> list:
-    """What an edit did to the objects, as scene change records."""
-    changes = []
-    for sym, (label, old) in before.items():
-        if sym not in after:
-            changes.append(
-                {
-                    "kind": REMOVED,
-                    "symbol": sym,
-                    "label": label,
-                    "old": old,
-                    "new": None,
-                }
-            )
-            continue
-        new = after[sym][1]
-        if old and new and sum((a - b) ** 2 for a, b in zip(old, new)) > min_move_m**2:
-            changes.append(
-                {"kind": MOVED, "symbol": sym, "label": label, "old": old, "new": new}
-            )
-    for sym, (label, new) in after.items():
-        if sym not in before:
-            changes.append(
-                {"kind": ADDED, "symbol": sym, "label": label, "old": None, "new": new}
-            )
-    return changes
 
 
 def _map_problem(dsgdb_conf) -> str:
@@ -247,32 +226,56 @@ def broken_map_warning(problem: str) -> str:
     )
 
 
-def gated(query_fn, bump=_bump_map_version, check=_map_problem, objects=_objects):
-    """run_cypher_query's function, refusing writes unless gate.allowed."""
+def gated(query_fn):
+    """run_cypher_query's function, read-only: map edits go through the edit tools.
+
+    Edits made with free Cypher could not be logged, so they could not be
+    undone, and a missing attribute could stop the map being published.
+    """
 
     @functools.wraps(query_fn)
     def run(cypher_string, dsgdb_conf=None):
-        if not is_write_query(cypher_string):
-            return query_fn(cypher_string, dsgdb_conf=dsgdb_conf)
-        if not gate.allowed:
-            return REFUSED
-        bare = _LITERAL.sub("''", cypher_string)
-        if _PROTECTED.search(bare):
-            return PROTECTED
-        if creates_map_node(cypher_string):
-            return NO_HAND_CREATE
-        before = objects(dsgdb_conf) if gate.report else None
-        result = query_fn(cypher_string, dsgdb_conf=dsgdb_conf)
-        version = bump(dsgdb_conf)
-        gate.wrote = True
-        if gate.report:
-            changes = object_changes(before, objects(dsgdb_conf))
-            if changes:
-                gate.report(changes, version)
-        problem = check(dsgdb_conf)
-        return f"{result}\n{broken_map_warning(problem)}" if problem else result
+        if is_write_query(cypher_string):
+            return READ_ONLY if gate.allowed else REFUSED
+        return query_fn(cypher_string, dsgdb_conf=dsgdb_conf)
 
     return run
+
+
+def _editing(dsgdb_conf, edit) -> str:
+    """Run one map edit as SGET: refuse outside SGET, log it, bump, announce, check.
+
+    edit(db) returns (message, object_changes); object_changes None means
+    nothing was changed and message says why.
+    """
+    if not gate.allowed:
+        return REFUSED
+    from heracles_ros.map_state import bump_map_version, is_rebuilding
+
+    with _connect(dsgdb_conf) as db:
+        if is_rebuilding(db):
+            return REBUILDING
+        message, changes = edit(db)
+        if changes is None:
+            return message
+        version = bump_map_version(db)
+    gate.wrote = True
+    if gate.report and changes:
+        gate.report(changes, version)
+    problem = _map_problem(dsgdb_conf)
+    done = f"{message} (map_version {version}). It can be undone with undo_scene_edit."
+    return f"{done}\n{broken_map_warning(problem)}" if problem else done
+
+
+def _record(db, op, data):
+    from heracles_ros.change_log import record
+
+    record(db, SGET_SOURCE, op, data)
+
+
+def _object_symbol(symbol: str) -> str:
+    s = (symbol or "").strip()
+    return s[:1].upper() + s[1:]
 
 
 def add_scene_object(
@@ -283,24 +286,22 @@ def add_scene_object(
     dsgdb_conf: HeraclesDsgInterface = None,
 ) -> str:
     """Add an object to the scene graph, as change detection would (SGET only)."""
-    if not gate.allowed:
-        return REFUSED
-    from heracles_ros.map_state import bump_map_version
-    from heracles_ros.scene_change import add_object
 
-    with _connect(dsgdb_conf) as db:
+    def edit(db):
+        from heracles_ros.change_log import record_applied
+        from heracles_ros.scene_change import add_object
+
         added = add_object(db, "", object_class, (x, y, z))
+        record_applied(db, SGET_SOURCE, [added])
         sym = added["symbol"]
         rows = db.query(
             f"MATCH (p:MeshPlace)-[:CONTAINS]->(o:Object {{nodeSymbol: '{sym}'}}) "
             "RETURN p.nodeSymbol AS p"
         )
-        version = bump_map_version(db)
-    gate.wrote = True
-    if gate.report:
-        gate.report([added], version)
-    place = f", in place {rows[0]['p']}" if rows else ""
-    return f"Added {sym} ({object_class}) at ({x}, {y}, {z}){place}."
+        place = f", in place {rows[0]['p']}" if rows else ""
+        return f"Added {sym} ({object_class}) at ({x}, {y}, {z}){place}", [added]
+
+    return _editing(dsgdb_conf, edit)
 
 
 add_object_tool = ToolDescription(
@@ -320,6 +321,80 @@ add_object_tool = ToolDescription(
 )
 
 
+def move_scene_object(
+    symbol: str,
+    x: float,
+    y: float,
+    z: float = None,
+    dsgdb_conf: HeraclesDsgInterface = None,
+) -> str:
+    """Move an object to a map position (SGET only)."""
+
+    def edit(db):
+        from heracles_ros.change_log import record_applied
+        from heracles_ros.scene_change import holder_of, move_object, object_center
+
+        sym = _object_symbol(symbol)
+        old = object_center(db, sym)
+        if old is None:
+            return f"Refused: there is no object {sym}.", None
+        if holder_of(db, sym):
+            return f"Refused: {sym} is held by {holder_of(db, sym)}.", None
+        moved = move_object(db, sym, (x, y, old[2] if z is None else z))
+        record_applied(db, SGET_SOURCE, [moved])
+        return f"Moved {sym} from ({old[0]:.1f}, {old[1]:.1f}) to ({x}, {y})", [moved]
+
+    return _editing(dsgdb_conf, edit)
+
+
+move_object_tool = ToolDescription(
+    name="move_scene_object",
+    description=(
+        "Move an object in the scene graph to a map position. Only for a user "
+        "message starting with 'SGET:'."
+    ),
+    parameters=[
+        FunctionParameter("symbol", str, "The object's id, e.g. 'O15'"),
+        FunctionParameter("x", float, "new x position in the map frame (m)"),
+        FunctionParameter("y", float, "new y position in the map frame (m)"),
+        FunctionParameter(
+            "z", float, "new z (m); default: keep its height", required=False
+        ),
+    ],
+    function=move_scene_object,
+)
+
+
+def remove_scene_object(symbol: str, dsgdb_conf: HeraclesDsgInterface = None) -> str:
+    """Remove an object from the scene graph (SGET only)."""
+
+    def edit(db):
+        from heracles_ros.change_log import record_applied
+        from heracles_ros.scene_change import holder_of, object_center, remove_object
+
+        sym = _object_symbol(symbol)
+        if object_center(db, sym) is None:
+            return f"Refused: there is no object {sym}.", None
+        if holder_of(db, sym):
+            return f"Refused: {sym} is held by {holder_of(db, sym)}.", None
+        removed = remove_object(db, sym)
+        record_applied(db, SGET_SOURCE, [removed])
+        return f"Removed {sym} ({removed['label'] or 'unknown class'})", [removed]
+
+    return _editing(dsgdb_conf, edit)
+
+
+remove_object_tool = ToolDescription(
+    name="remove_scene_object",
+    description=(
+        "Remove an object from the scene graph. Only for a user message starting "
+        "with 'SGET:'."
+    ),
+    parameters=[FunctionParameter("symbol", str, "The object's id, e.g. 'O15'")],
+    function=remove_scene_object,
+)
+
+
 def add_scene_place(
     x: float,
     y: float,
@@ -328,51 +403,32 @@ def add_scene_place(
     dsgdb_conf: HeraclesDsgInterface = None,
 ) -> str:
     """Add a traversable place, connected both ways to the places named (SGET only)."""
-    if not gate.allowed:
-        return REFUSED
-    from heracles_ros.map_state import bump_map_version
-
     neighbours = [n.strip().lower() for n in connect_to.split(",") if n.strip()]
     symbol = symbol.strip().lower()
-    if symbol and not re.fullmatch(r"t\d+", symbol):
+    if gate.allowed and symbol and not re.fullmatch(r"t\d+", symbol):
         return f"Refused: a place id is t followed by a number, not '{symbol}'."
-    with _connect(dsgdb_conf) as db:
-        known = {
-            r["s"]
-            for r in db.query(
-                "MATCH (p:MeshPlace) WHERE p.nodeSymbol IN "
-                f"{neighbours + [symbol]} RETURN p.nodeSymbol AS s"
-            )
-        }
-        if symbol in known:
-            return f"Refused: place {symbol} already exists."
-        missing = [n for n in neighbours if n not in known]
+
+    def edit(db):
+        from heracles_ros.scene_change import add_place, place_exists
+
+        if symbol and place_exists(db, symbol):
+            return f"Refused: place {symbol} already exists.", None
+        missing = [n for n in neighbours if not place_exists(db, n)]
         if not neighbours or missing:
-            return f"Refused: connect_to must name existing places; missing: {missing or 'none given'}."
-        if not symbol:
-            top = db.query(
-                "MATCH (p:MeshPlace) RETURN max(toInteger(substring(p.nodeSymbol, 1))) AS n"
-            )[0]["n"]
-            symbol = f"t{(top or 0) + 1}"
-        # A new place looks like its nearest neighbour (attribute type, clearance)
-        # except for where it is, so the scene graph can be built from it.
-        db.query(
-            "MATCH (src:MeshPlace) WITH src, "
-            f"(src.pos_x - {x})^2 + (src.pos_y - {y})^2 AS d ORDER BY d LIMIT 1 "
-            "CREATE (p:MeshPlace) SET p = properties(src), "
-            f"p.nodeSymbol = '{symbol}', p.center = point({{x: {x}, y: {y}, z: 0.0}}), "
-            f"p.pos_x = {x}, p.pos_y = {y}, p.pos_z = 0.0"
+            return (
+                "Refused: connect_to must name existing places; missing: "
+                f"{missing or 'none given'}.",
+                None,
+            )
+        added = add_place(db, symbol, x, y, neighbours)
+        _record(db, "add_place", added)
+        return (
+            f"Added place {added['symbol']} at ({x}, {y}), connected to "
+            f"{', '.join(neighbours)}",
+            [],
         )
-        db.query(
-            f"MATCH (p:MeshPlace {{nodeSymbol: '{symbol}'}}), (q:MeshPlace) "
-            f"WHERE q.nodeSymbol IN {neighbours} "
-            "CREATE (p)-[:MESH_PLACE_CONNECTED]->(q), (q)-[:MESH_PLACE_CONNECTED]->(p)"
-        )
-        version = bump_map_version(db)
-    gate.wrote = True
-    problem = _map_problem(dsgdb_conf)
-    done = f"Added place {symbol} at ({x}, {y}), connected to {', '.join(neighbours)} (map_version {version})."
-    return f"{done}\n{broken_map_warning(problem)}" if problem else done
+
+    return _editing(dsgdb_conf, edit)
 
 
 add_place_tool = ToolDescription(
@@ -400,6 +456,176 @@ add_place_tool = ToolDescription(
 )
 
 
+def remove_scene_place(symbol: str, dsgdb_conf: HeraclesDsgInterface = None) -> str:
+    """Delete a place and all its connections (SGET only)."""
+
+    def edit(db):
+        from heracles_ros.scene_change import remove_place
+
+        removed = remove_place(db, symbol)
+        if removed is None:
+            return f"Refused: there is no place {symbol.strip().lower()}.", None
+        _record(db, "remove_place", {"symbol": removed["symbol"]})
+        moved = (
+            f"; its objects {', '.join(removed['objects'])} now belong to the nearest place"
+            if removed["objects"]
+            else ""
+        )
+        return (
+            f"Deleted place {removed['symbol']} and its {removed['edges']} edges{moved}",
+            [],
+        )
+
+    return _editing(dsgdb_conf, edit)
+
+
+remove_place_tool = ToolDescription(
+    name="remove_scene_place",
+    description=(
+        "Delete a place (MeshPlace) with all its connections, e.g. where the "
+        "robot can no longer go. Only for a user message starting with 'SGET:'."
+    ),
+    parameters=[FunctionParameter("symbol", str, "The place's id, e.g. 't444'")],
+    function=remove_scene_place,
+)
+
+
+def connect_scene_places(
+    place_a: str, place_b: str, dsgdb_conf: HeraclesDsgInterface = None
+) -> str:
+    """Connect two places both ways (SGET only)."""
+
+    def edit(db):
+        from heracles_ros.scene_change import add_connection
+
+        done = add_connection(db, place_a, place_b)
+        if done is None:
+            return (
+                f"Refused: {place_a} and {place_b} must be two existing places that "
+                "are not connected yet.",
+                None,
+            )
+        _record(db, "add_connection", done)
+        return f"Connected {done['a']} and {done['b']}", []
+
+    return _editing(dsgdb_conf, edit)
+
+
+connect_places_tool = ToolDescription(
+    name="connect_scene_places",
+    description=(
+        "Connect two existing places, both ways. Only for a user message starting "
+        "with 'SGET:'."
+    ),
+    parameters=[
+        FunctionParameter("place_a", str, "A place id, e.g. 't444'"),
+        FunctionParameter("place_b", str, "The other place id"),
+    ],
+    function=connect_scene_places,
+)
+
+
+def disconnect_scene_places(
+    place_a: str, place_b: str, dsgdb_conf: HeraclesDsgInterface = None
+) -> str:
+    """Remove the connection between two places, both ways (SGET only)."""
+
+    def edit(db):
+        from heracles_ros.scene_change import remove_connection
+
+        done = remove_connection(db, place_a, place_b)
+        if done is None:
+            return f"Refused: {place_a} and {place_b} are not connected.", None
+        _record(db, "remove_connection", done)
+        return f"Disconnected {done['a']} and {done['b']}", []
+
+    return _editing(dsgdb_conf, edit)
+
+
+disconnect_places_tool = ToolDescription(
+    name="disconnect_scene_places",
+    description=(
+        "Remove the connection between two places, both ways, e.g. a blocked "
+        "passage. Only for a user message starting with 'SGET:'."
+    ),
+    parameters=[
+        FunctionParameter("place_a", str, "A place id, e.g. 't444'"),
+        FunctionParameter("place_b", str, "The other place id"),
+    ],
+    function=disconnect_scene_places,
+)
+
+
+def _call_writer(service: str) -> str:
+    """Ask the scene change writer to undo or reset (it rebuilds the map)."""
+    if not gate.allowed:
+        return REFUSED
+    if gate.call_writer is None:
+        return "Not available: the chat is not connected to the scene change writer."
+    ok, message = gate.call_writer(service)
+    if ok:
+        gate.wrote = True
+    return message if ok else f"Failed: {message}"
+
+
+def undo_scene_edit() -> str:
+    """Undo the latest map edit made from the chat (SGET only)."""
+    return _call_writer("undo_last_edit")
+
+
+def clear_scene_edits() -> str:
+    """Undo every map edit made from the chat (SGET only)."""
+    return _call_writer("clear_edits")
+
+
+def reset_scene_graph() -> str:
+    """Return the map to the prior scene graph: every change dropped (SGET only)."""
+    return _call_writer("reset")
+
+
+undo_edit_tool = ToolDescription(
+    name="undo_scene_edit",
+    description=(
+        "Undo the latest scene graph edit made from this chat. Only for a user "
+        "message starting with 'SGET:'."
+    ),
+    parameters=[],
+    function=undo_scene_edit,
+)
+clear_edits_tool = ToolDescription(
+    name="clear_scene_edits",
+    description=(
+        "Undo every scene graph edit made from this chat; changes found by change "
+        "detection stay. Only for a user message starting with 'SGET:'."
+    ),
+    parameters=[],
+    function=clear_scene_edits,
+)
+reset_tool = ToolDescription(
+    name="reset_scene_graph",
+    description=(
+        "Return the scene graph to the original prior map: every edit and every "
+        "change detection result is dropped, and the change detection base "
+        "station is cleared. Only for a user message starting with 'SGET:'."
+    ),
+    parameters=[],
+    function=reset_scene_graph,
+)
+
+EDIT_TOOLS = [
+    add_object_tool,
+    move_object_tool,
+    remove_object_tool,
+    add_place_tool,
+    remove_place_tool,
+    connect_places_tool,
+    disconnect_places_tool,
+    undo_edit_tool,
+    clear_edits_tool,
+    reset_tool,
+]
+
+
 def confirming(send_fn):
     """send_pddl_goal_with_constraints's function, sending only confirmed goals.
 
@@ -424,6 +650,7 @@ def confirming(send_fn):
             gate.show(pddl_goal_string, constraints_json)
             return NOT_CONFIRMED
         gate.pending = None
+        gate.last_context = gate._proposed.get(key, gate.last_context)
         result = send_fn(pddl_goal_string, constraints_json=constraints_json, **kwargs)
         gate.last_goal = (pddl_goal_string, constraints_json)
         return result
@@ -432,7 +659,7 @@ def confirming(send_fn):
 
 
 def install() -> None:
-    """Gate map writes, add add_scene_object, send only confirmed goals.
+    """Make Cypher read-only, add the edit tools, send only confirmed goals.
 
     Call before the LlmAgent is built.
     """
@@ -444,8 +671,8 @@ def install() -> None:
     if not getattr(tool.function, "_sget_gated", False):
         tool.function = gated(tool.function)
         tool.function._sget_gated = True
-    register_tool(add_object_tool)
-    register_tool(add_place_tool)
+    for edit_tool in EDIT_TOOLS:
+        register_tool(edit_tool)
     tool = ToolRegistry.tools["send_pddl_goal_with_constraints"]
     if not getattr(tool.function, "_sget_confirms", False):
         tool.function = confirming(tool.function)

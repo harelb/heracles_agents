@@ -1,41 +1,44 @@
-"""Map writes run only for an SGET request."""
+"""Map edits run only for an SGET request, through the edit tools; Cypher only reads."""
 
 import pytest
 
 from heracles_agents.scene_graph_edit import (
-    NO_HAND_CREATE,
+    EDIT_TOOLS,
     NOT_CONFIRMED,
-    PROTECTED,
+    READ_ONLY,
     REFUSED,
     add_scene_object,
-    creates_map_node,
+    clear_scene_edits,
+    confirming,
     gate,
     gated,
+    goal_context_note,
     is_edit_request,
     is_write_query,
-    confirming,
-    object_changes,
+    remove_scene_place,
     resend_offer,
+    reset_scene_graph,
     turn_allows_edits,
+    undo_scene_edit,
 )
 
 
 @pytest.fixture
 def query():
-    ran, bumps = [], []
+    ran = []
     run = gated(
-        lambda cypher_string, dsgdb_conf=None: ran.append(cypher_string) or "[]",
-        bump=bumps.append,
-        check=lambda conf: "",
+        lambda cypher_string, dsgdb_conf=None: ran.append(cypher_string) or "[]"
     )
     _clear()
-    yield run, ran, bumps
+    yield run, ran
     _clear()
 
 
 def _clear():
     gate.allowed = gate.wrote = gate.user_turn = False
-    gate.last_goal = gate.pending = gate.report = None
+    gate.last_goal = gate.pending = gate.report = gate.call_writer = None
+    gate.context = gate.last_context = None
+    gate._proposed = {}
 
 
 def test_edit_requests():
@@ -58,43 +61,27 @@ def test_write_queries():
 
 
 def test_reads_always_run(query):
-    run, ran, bumps = query
+    run, ran = query
     run("MATCH (o:Object) RETURN o")
-    assert ran == ["MATCH (o:Object) RETURN o"] and bumps == []
+    assert ran == ["MATCH (o:Object) RETURN o"]
 
 
-def test_writes_are_refused_without_sget(query):
-    run, ran, bumps = query
-    assert run("MATCH (p:MeshPlace {nodeSymbol: 't444'}) DETACH DELETE p") == REFUSED
-    assert ran == [] and bumps == []
-
-
-def test_writes_run_for_sget_and_bump_the_map(query):
-    run, ran, bumps = query
+def test_cypher_never_writes(query):
+    run, ran = query
+    delete = "MATCH (p:MeshPlace {nodeSymbol: 't444'}) DETACH DELETE p"
+    assert run(delete) == REFUSED  # outside SGET: resend with SGET
     gate.allowed = True
-    run("MATCH (p:MeshPlace {nodeSymbol: 't444'}) DETACH DELETE p", dsgdb_conf="conf")
-    assert len(ran) == 1 and bumps == ["conf"] and gate.wrote
-
-
-def test_robots_and_map_version_are_never_written(query):
-    run, ran, _ = query
-    gate.allowed = True
-    assert run("MATCH (r:Robot) DETACH DELETE r") == PROTECTED
-    assert run("MATCH (m:_MapState) SET m.version = 0") == PROTECTED
-    assert ran == []
+    assert run(delete) == READ_ONLY  # in SGET: use the edit tools
+    assert ran == [] and not gate.wrote
 
 
 def test_after_an_edit_the_last_goal_is_offered_again(query):
-    run, _, _ = query
     send = confirming(lambda goal, **kw: f"Sent goal {goal}")
     goal, constraints = "(visited-place t500)", '[["forbidden-poi", "o3"]]'
     gate.start_turn(user_turn=True)
     send(goal, constraints_json=constraints)  # proposed
     gate.start_turn(user_turn=True)
     send(goal, constraints_json=constraints)  # confirmed
-    gate.allowed = True
-    run("MATCH (p:MeshPlace {nodeSymbol: 't444'}) DETACH DELETE p")
-    assert gate.wrote
     offer = resend_offer(gate.last_goal)
     assert "(visited-place t500)" in offer and "forbidden-poi" in offer
     assert "send this goal again" in offer
@@ -104,40 +91,6 @@ def test_after_an_edit_the_last_goal_is_offered_again(query):
 
 def test_no_offer_without_a_goal_sent(query):
     assert resend_offer(gate.last_goal) == ""
-
-
-def test_objects_and_places_are_not_created_by_hand(query):
-    run, ran, _ = query
-    gate.allowed = True
-    hand_made = "CREATE (o:Object {nodeSymbol: 'O21', class: 'chair'})"
-    assert creates_map_node(hand_made)
-    assert creates_map_node(
-        "MATCH (p:MeshPlace) MERGE (p)-[:CONTAINS]->(o:Object {class: 'x'})"
-    )
-    assert creates_map_node("CREATE (t:MeshPlace {nodeSymbol: 't1'})")
-    # Linking existing nodes, or a label only inside MATCH, is fine.
-    assert not creates_map_node(
-        "MATCH (o:Object {nodeSymbol: 'O3'}), (p:MeshPlace {nodeSymbol: 't4'}) "
-        "CREATE (p)-[:CONTAINS]->(o)"
-    )
-    assert not creates_map_node("MATCH (o:Object) SET o.class = 'CREATE (x:Object)'")
-    assert run(hand_made) == NO_HAND_CREATE and ran == []
-
-
-def test_an_edit_that_breaks_the_map_is_reported():
-    gate.allowed = True
-    try:
-        run = gated(
-            lambda cypher_string, dsgdb_conf=None: "[]",
-            bump=lambda conf: None,
-            check=lambda conf: "Node O21 has no attr_type property.",
-        )
-        result = run("MATCH (o:Object {nodeSymbol: 'O0'}) REMOVE o.attr_type")
-        assert (
-            "cannot be built" in result and "O21" in result and "Fix or undo" in result
-        )
-    finally:
-        gate.allowed = gate.wrote = False
 
 
 def test_adding_an_object_needs_sget():
@@ -183,36 +136,6 @@ def test_a_scene_change_report_never_sends(query):
     assert send("(visited-object o8)") == NOT_CONFIRMED and sent == []
 
 
-def test_an_edit_is_announced_as_a_scene_change(query):
-    run, _, _ = query
-    reports = []
-    maps = [
-        {"O16": ("trash", (1.0, 2.0, 0.0)), "O5": ("chair", (0.0, 0.0, 0.0))},
-        {"O5": ("chair", (3.0, 0.0, 0.0)), "O21": ("cone", (4.0, 4.0, 0.0))},
-    ]
-    run = gated(
-        lambda cypher_string, dsgdb_conf=None: "[]",
-        bump=lambda conf: 7,
-        check=lambda conf: "",
-        objects=lambda conf: maps.pop(0),
-    )
-    gate.allowed = True
-    gate.report = lambda changes, version: reports.append((changes, version))
-    run("MATCH (o:Object {nodeSymbol: 'O16'}) DETACH DELETE o")
-    ((changes, version),) = reports
-    assert version == 7
-    assert sorted((c["kind"], c["symbol"], c["label"]) for c in changes) == [
-        (0, "O21", "cone"),
-        (1, "O16", "trash"),
-        (2, "O5", "chair"),
-    ]
-
-
-def test_unchanged_objects_are_not_reported():
-    same = {"O1": ("chair", (1.0, 1.0, 0.0))}
-    assert object_changes(same, {"O1": ("chair", (1.01, 1.0, 0.0))}) == []
-
-
 def test_adding_a_place_needs_sget():
     from heracles_agents.scene_graph_edit import add_scene_place
 
@@ -220,11 +143,47 @@ def test_adding_a_place_needs_sget():
     assert add_scene_place(29.4, -14.9, "t1104, t1405", "t999") == REFUSED
 
 
-def test_linking_existing_places_is_not_creating_one():
-    assert not creates_map_node(
-        "MATCH (a:MeshPlace {nodeSymbol: 't1'}), (b:MeshPlace {nodeSymbol: 't2'}) "
-        "CREATE (a)-[:MESH_PLACE_CONNECTED]->(b), (b)-[:MESH_PLACE_CONNECTED]->(a)"
+def test_every_edit_tool_needs_sget(query):
+    assert remove_scene_place("t444") == REFUSED
+    assert undo_scene_edit() == REFUSED
+    assert reset_scene_graph() == REFUSED
+
+
+def test_undo_and_reset_ask_the_writer(query):
+    calls = []
+    gate.call_writer = lambda service: calls.append(service) or (
+        True,
+        f"{service} done",
     )
+    gate.allowed = True
+    assert undo_scene_edit() == "undo_last_edit done" and gate.wrote
+    clear_scene_edits()
+    reset_scene_graph()
+    assert calls == ["undo_last_edit", "clear_edits", "reset"]
+    gate.call_writer = lambda service: (False, "the writer is not running")
+    assert reset_scene_graph() == "Failed: the writer is not running"
+
+
+def test_undo_without_a_writer_says_so(query):
+    gate.allowed = True
+    assert "not connected" in undo_scene_edit()
+
+
+def test_the_chat_config_lists_every_edit_tool():
+    import os
+
+    import yaml
+
+    path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "examples",
+        "chatdsg_repair",
+        "agent_config.yaml",
+    )
+    with open(path) as fo:
+        names = {t["name"] for t in yaml.safe_load(fo)["agent_info"]["tools"]}
+    assert {t.name for t in EDIT_TOOLS} <= names
 
 
 def test_the_repair_chat_config_binds_args_the_tools_accept():
@@ -244,7 +203,11 @@ def test_the_repair_chat_config_binds_args_the_tools_accept():
 
     install()
     path = os.path.join(
-        os.path.dirname(__file__), "..", "examples", "chatdsg_repair", "agent_config.yaml"
+        os.path.dirname(__file__),
+        "..",
+        "examples",
+        "chatdsg_repair",
+        "agent_config.yaml",
     )
     with open(path) as fo:
         tools = yaml.safe_load(fo)["agent_info"]["tools"]
@@ -254,3 +217,31 @@ def test_the_repair_chat_config_binds_args_the_tools_accept():
         # follow_wrapped=False: check the wrapper itself, not what it wraps.
         sig = inspect.signature(fn, follow_wrapped=False)
         sig.bind_partial(**bound)  # raises TypeError if not
+
+
+def test_a_goal_remembers_what_was_asked_and_from_where(query):
+    send = confirming(lambda goal, **kw: f"Sent goal {goal}")
+    here = {
+        "request": "send hamilton to the nearest cone",
+        "robots": {"hamilton": (-25.5, 2.3)},
+    }
+    gate.context = lambda: here
+    gate.start_turn(user_turn=True)
+    send("(visited-object-by hamilton o7)")  # proposed
+    gate.context = lambda: {"request": "yes", "robots": {"hamilton": (-16.0, 2.0)}}
+    gate.start_turn(user_turn=True)
+    send("(visited-object-by hamilton o7)")  # confirmed
+    assert gate.last_context == here
+
+    # o7 is removed; the agent re-proposes from a scene change report ...
+    gate.start_turn(user_turn=False)
+    send("(visited-object-by hamilton o16)")
+    gate.start_turn(user_turn=True)
+    send("(visited-object-by hamilton o16)")  # ... and the user confirms
+    assert gate.last_context == here  # still the original request and position
+    note = goal_context_note(gate.last_context)
+    assert "nearest cone" in note and "hamilton at (-25.5, 2.3)" in note
+
+
+def test_no_note_before_any_goal():
+    assert goal_context_note(None) == ""

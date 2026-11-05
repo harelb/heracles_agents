@@ -26,6 +26,35 @@ agent_info:
         dsgdb_conf:
           dsg_interface_type: heracles
           uri: neo4j://$ADT4_HERACLES_IP:$ADT4_HERACLES_PORT
+    - name: move_scene_object
+      bound_args:
+        dsgdb_conf:
+          dsg_interface_type: heracles
+          uri: neo4j://$ADT4_HERACLES_IP:$ADT4_HERACLES_PORT
+    - name: remove_scene_object
+      bound_args:
+        dsgdb_conf:
+          dsg_interface_type: heracles
+          uri: neo4j://$ADT4_HERACLES_IP:$ADT4_HERACLES_PORT
+    - name: remove_scene_place
+      bound_args:
+        dsgdb_conf:
+          dsg_interface_type: heracles
+          uri: neo4j://$ADT4_HERACLES_IP:$ADT4_HERACLES_PORT
+    - name: connect_scene_places
+      bound_args:
+        dsgdb_conf:
+          dsg_interface_type: heracles
+          uri: neo4j://$ADT4_HERACLES_IP:$ADT4_HERACLES_PORT
+    - name: disconnect_scene_places
+      bound_args:
+        dsgdb_conf:
+          dsg_interface_type: heracles
+          uri: neo4j://$ADT4_HERACLES_IP:$ADT4_HERACLES_PORT
+    # Undo and reset are services of the scene change writer, which rebuilds the map.
+    - name: undo_scene_edit
+    - name: clear_scene_edits
+    - name: reset_scene_graph
     - name: send_pddl_goal_with_constraints
       bound_args:
         # Bind robot_name directly to override this environment variable.

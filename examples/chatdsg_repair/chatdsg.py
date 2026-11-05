@@ -6,9 +6,11 @@ one is put to the agent as a report, so it can recheck whether the change
 affects what the user asked for. Reports and user messages take turns: one
 arriving while the agent is busy waits, and waiting ones go in together.
 
-The scene graph is edited only for a message starting with "SGET:"; other
-turns cannot write to Neo4j (heracles_agents.scene_graph_edit). After an edit
-the chat always offers to send the last goal again, so the robot replans.
+The scene graph is edited only for a message starting with "SGET:", with the
+edit tools; Cypher queries only read (heracles_agents.scene_graph_edit). Edits
+are logged, so they can be undone, or the map reset to the prior scene graph.
+After an edit the chat always offers to send the last goal again, so the robot
+replans.
 """
 
 # Register the repair tool before the agent loads
@@ -27,10 +29,12 @@ from heracles_agents.llm_interface import AgentContext
 from heracles_agents.scene_change_listener import REPORT_PREFIX, SceneChangeListener
 from heracles_agents.scene_graph_edit import (
     gate,
+    goal_context_note,
     goal_symbols,
     install,
     missing_symbols,
     resend_offer,
+    robot_positions,
     turn_allows_edits,
 )
 
@@ -55,6 +59,8 @@ class RepairChatApp(mod.InputDisplayApp):
         self._listener.start()
         # Map edits go out as scene changes, so the planner checks the plan.
         gate.report = self._listener.publish_applied
+        # Undo and reset are rebuilt by the scene change writer.
+        gate.call_writer = self._listener.call_writer
 
     def on_unmount(self) -> None:
         self._listener.stop()
@@ -66,8 +72,12 @@ class RepairChatApp(mod.InputDisplayApp):
         self._take_turn(f"[bold black on white]User:[/] {escape(text)}", text)
 
     def post_scene_change(self, report: str) -> None:
+        # What the running goal was asked for and from where, so the agent
+        # redoes "the nearest cone" from where the robot was, not where it is.
+        note = goal_context_note(gate.last_context)
         self._take_turn(
-            f"[bold black on yellow]Scene change:[/] {escape(report)}", report
+            f"[bold black on yellow]Scene change:[/] {escape(report)}",
+            f"{report}\n{note}" if note else report,
         )
 
     def _take_turn(self, shown: str, content: str) -> None:
@@ -87,6 +97,8 @@ class RepairChatApp(mod.InputDisplayApp):
         content = "\n\n".join(contents)
         gate.start_turn(any(not c.startswith(REPORT_PREFIX) for c in contents))
         gate.allowed = turn_allows_edits(contents)
+        request = "\n".join(c for c in contents if not c.startswith(REPORT_PREFIX))
+        gate.context = lambda: {"request": request, "robots": self._robot_positions()}
         self.messages += mod.new_user_message(content)
         initial_length = len(self.messages)
         cxt = AgentContext(self.agent)
@@ -118,6 +130,13 @@ class RepairChatApp(mod.InputDisplayApp):
                 self.call_from_thread(self._run_agent)  # next waiting turn, if any
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _robot_positions(self) -> dict:
+        conf = self.agent.agent_info.tools["run_cypher_query"]._bound_args
+        try:
+            return robot_positions(conf["dsgdb_conf"])
+        except Exception:
+            return {}  # Neo4j unavailable: the request alone still helps
 
 
 if __name__ == "__main__":

@@ -10,8 +10,14 @@ Changes our own robots made (source "executor/<robot>": a pick or place the
 plan already accounts for) are not reported, nor the chat's own map edits
 (source "sget/..."), which the agent made itself. Those edits are published
 here (publish_applied) so the planner judges them like any other change.
+
+The same node calls the scene change writer's services (call_writer): undoing
+an edit or resetting the map rebuilds it there, from the prior scene graph.
+The writer is /<ADT4_ROBOT_NAME>/scene_change_writer unless
+ADT4_SCENE_CHANGE_WRITER names it.
 """
 
+import os
 import threading
 from typing import Callable
 
@@ -53,9 +59,16 @@ class SceneChangeListener:
         self,
         on_report: Callable[[str], None],
         topic: str = "/scene_graph/changes_applied",
+        writer: str = "",
     ):
         self.on_report = on_report
         self.topic = topic
+        self.writer = (
+            writer
+            or os.environ.get("ADT4_SCENE_CHANGE_WRITER")
+            or (f"/{os.environ.get('ADT4_ROBOT_NAME', '')}/scene_change_writer")
+        )
+        self._clients = {}
         self._executor = None
         self._thread = None
 
@@ -87,6 +100,24 @@ class SceneChangeListener:
 
         stamp = self._node.get_clock().now().to_msg()
         self._pub.publish(applied_msg(source, map_version, changes, stamp))
+
+    def call_writer(self, service: str, timeout_s: float = 15.0):
+        """Call a std_srvs/Trigger service of the writer; returns (ok, message)."""
+        from std_srvs.srv import Trigger
+
+        name = f"{self.writer}/{service}"
+        client = self._clients.get(name)
+        if client is None:
+            client = self._clients[name] = self._node.create_client(Trigger, name)
+        if not client.wait_for_service(timeout_sec=2.0):
+            return False, f"the scene change writer ({name}) is not running"
+        done = threading.Event()
+        future = client.call_async(Trigger.Request())
+        future.add_done_callback(lambda _f: done.set())
+        if not done.wait(timeout=timeout_s):
+            return False, f"{name} did not answer within {timeout_s:.0f} s"
+        result = future.result()
+        return bool(result.success), result.message
 
     def stop(self) -> None:
         import rclpy
