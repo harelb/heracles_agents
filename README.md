@@ -110,6 +110,41 @@ tmuxp load chatdsg_system_example.yaml
 Refer to the table at the top of this README for the environment variables that
 must be set.
 
+### Chatdsg with plan repair: editing the scene graph (SGET)
+
+[chatdsg_repair](examples/chatdsg_repair/chatdsg.py) is chatdsg for plan repair:
+it tells the agent when the map changes under a running goal. The agent edits
+the scene graph only for a message that starts with `SGET:`. Otherwise it can
+only read the map, and Cypher queries are always read-only.
+
+| Type                                         | What happens                                                   |
+|----------------------------------------------|----------------------------------------------------------------|
+| `SGET: remove O5` / `SGET: move O5 to 2, 3`  | Removes or moves an object                                     |
+| `SGET: add a cone at 2, 3`                   | Adds an object (it gets the next free id, e.g. `O21`)          |
+| `SGET: delete place t487`                    | Deletes a place and its connections (its objects move to the nearest place) |
+| `SGET: disconnect t4 and t5`                 | Removes a passage (`connect` adds one)                         |
+| `SGET: undo the last edit`                   | Undoes the latest chat edit                                    |
+| `SGET: undo all my edits`                    | Undoes every chat edit; change detection results stay          |
+| `SGET: reset the scene graph`                | Back to the prior map: all chat edits and change detection results dropped, the AWCD base station cleared |
+
+After an edit, the chat offers to resend the last goal. Goals like "the nearest
+cone" are worked out again from where the robots were when you asked.
+
+Undo and reset are done by heracles_ros's `scene_change_writer`. It rebuilds
+the map from the prior scene graph plus the edits still active. This works only
+when Neo4j was seeded from the prior file (or the writer's `prior_dsg_path` is
+set); otherwise undo and reset are refused and nothing changes. Selecting **All** and pressing Reset in RViz's Change
+Detection panel does the same reset. The writer can also be called directly:
+
+```bash
+ros2 service call /<robot>/scene_change_writer/undo_last_edit std_srvs/srv/Trigger
+ros2 service call /<robot>/scene_change_writer/clear_edits std_srvs/srv/Trigger
+ros2 service call /<robot>/scene_change_writer/reset std_srvs/srv/Trigger
+```
+
+The writer is `/$ADT4_ROBOT_NAME/scene_change_writer` unless
+`ADT4_SCENE_CHANGE_WRITER` names another one.
+
 ### Experiment Pipelines
 
 TODO
