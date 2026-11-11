@@ -140,3 +140,62 @@ def test_examples_only_name_robots_the_user_named(engine):
         ):
             for robot in _ROBOT_FIRST.findall(goal):
                 assert robot in user, (ex["user"], goal)
+
+
+_STAY_WORDS = ('"be at"', '"stay at"', '"wait at"', '"park at"', '"stop at"', '"block"')
+_AT_EXAMPLES = (
+    '- "Euclid, be at O20": (at-object euclid o20)',
+    '- "Hamilton, wait at t7": (at-place hamilton t7)',
+    '- "Euclid visits O8 then stays at t12": '
+    "(and (visited-object-by euclid o8) (at-place euclid t12))",
+)
+_GO_TO_O21 = (
+    '- "Hamilton, go to O21. Gauss, inspect O26": '
+    "(and (visited-object-by hamilton o21) (inspected-by gauss o26))"
+)
+
+
+def _fast_downward_at_rules_in(text):
+    """Fast Downward: "be / stay / wait at" is at-place / at-object; "go to" is not."""
+    assert "use (at-place <robot> <t>) / (at-object <robot> <o>)" in text
+    for word in _STAY_WORDS:
+        assert word in text, word
+    assert "If the user explicitly asks for the at predicate, use it." in text
+    assert "at-place / at-object always need a robot" in text
+    assert "ask which robot should end there" in text
+    assert '"Go to", "visit", "check" or "look at"' in text
+    for example in _AT_EXAMPLES:
+        assert example in text, example
+    assert _GO_TO_O21 in text  # "go to" stays visited-object-by
+
+
+def test_fast_downward_rules_map_end_or_stay_to_at_predicates():
+    _fast_downward_at_rules_in(prompts.team_goal_rules("fast_downward"))
+
+
+def test_grstaps_rules_explain_the_limit_and_name_fast_downward():
+    text = prompts.team_goal_rules("grstaps")
+    assert "GRSTAPS-X cannot hold a robot at a final position" in text
+    assert "Fast Downward can (the console's planner toggle)" in text
+    assert "before constraint" in text
+    assert 'Never say that "the system" or "the interface" does not support' in text
+    for example in _AT_EXAMPLES:
+        assert example not in text
+    examples = text.split("Examples (")[1]
+    assert "(at-place" not in examples and "(at-object" not in examples
+    assert _GO_TO_O21 in text
+
+
+def test_chatdsg_repair_has_the_at_rules():
+    _fast_downward_at_rules_in(prompts.repair_chat_prompt("fast_downward")["system"])
+    grstaps = prompts.repair_chat_prompt("grstaps")["system"]
+    assert "Fast Downward can (the console's planner toggle)" in grstaps
+    assert "(at-object euclid o20)" not in grstaps
+
+
+def test_fast_downward_domain_uses_at_for_end_or_stay():
+    text = prompts.domain_description("fast_downward")
+    assert "(at-place ?r ?t): Robot ?r must END at place ?t" in text
+    assert "(at-object ?r ?o): Robot ?r must END at object ?o" in text
+    assert 'use "at-" predicates for the final destination' in text
+    assert "when the user wants a robot to end or stay somewhere" in text

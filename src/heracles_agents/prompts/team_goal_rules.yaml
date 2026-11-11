@@ -94,6 +94,24 @@ rules:
       or cones give each named robot a different cone, nearest first, in one goal,
       (and (holding hamilton o1) (holding euclid o20)). If the user only says "pick up X"
       with no robot and no destination, ask which robot should hold it.
+  - engines: [fast_downward]
+    text: >-
+      Ending or staying somewhere: when the user wants a named robot to END or STAY at a place
+      or object ("be at", "stay at", "end at", "wait at", "park at", "stop at", "block",
+      "stand by", "go to X and stay"), use (at-place <robot> <t>) / (at-object <robot> <o>):
+      that robot ends there. "Go to", "visit", "check" or "look at" (go there, then be free)
+      stay visited-*-by / visited-* as above. If the user explicitly asks for the at predicate,
+      use it. at-place / at-object always need a robot: if the user names none, ask which robot
+      should end there (as for holding).
+  - engines: [grstaps]
+    text: >-
+      Ending or staying somewhere ("be at", "stay at", "end at", "wait at", "park at", "stop
+      at", "block", "stand by", "go to X and stay", or the at predicate by name): GRSTAPS-X
+      cannot hold a robot at a final position (it takes no at-place / at-object); Fast Downward
+      can (the console's planner toggle). Tell the user so, and offer the substitute: visit it
+      last with a visited- predicate and a before constraint, so the robot goes there last but
+      where it stops afterwards is not guaranteed. Never say that "the system" or "the
+      interface" does not support at-place / at-object: only GRSTAPS-X does not.
   - text: >-
       A new goal replaces the old one. When the user adds a task, re-send the tasks of the
       last goal that are still wanted together with the new one, each as it was (with its
@@ -125,6 +143,16 @@ examples:
   - user: Also have hamilton visit O30
     goal: (and (visited-object-by hamilton o21) (inspected-by gauss o26) (visited-object-by hamilton o30))
     note: right after the goal above; its tasks are re-sent with their robots
+  - engines: [fast_downward]
+    user: Euclid, be at O20
+    goal: (at-object euclid o20)
+    note: euclid ends there; "go to O20" would be visited-object-by
+  - engines: [fast_downward]
+    user: Hamilton, wait at t7
+    goal: (at-place hamilton t7)
+  - engines: [fast_downward]
+    user: Euclid visits O8 then stays at t12
+    goal: (and (visited-object-by euclid o8) (at-place euclid t12))
   - user: Move O120 to place t11
     goal: (object-in-place o120 t11)
   - user: Have euclid move O58 to t1253
