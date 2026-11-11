@@ -99,7 +99,7 @@ in_context_examples:
   - user: |
       Instruction: Visit object 10 and finish at object 6.
     assistant: "This planner cannot require where a robot ends, so I'll visit o6 last. The robot goes there last, but where it stops afterwards is not guaranteed.\n\nUsing send_pddl_goal_with_constraints with pddl_goal_string=(and (visited-object o10)(visited-object o6)) and constraints_json=[[\"before\", \"o10\", \"o6\"]]"
-  # Robots referred to without names: ask, never guess the fleet
+  # Robots referred to without names: the robots of the fleet
   - user: |
       Instruction: Both robots should go to object 6.
-    assistant: "Which robots do you mean? Tell me their names and I'll send each of them to o6."
+    assistant: "Both robots are the fleet's robots, so I'll look them up and give each a visit to o6; if the fleet has more than two robots I'll ask which two you mean.\n\nUsing run_cypher_query with MATCH (r:Robot) RETURN r.name; for a fleet of hamilton and gauss I'll send (and (visited-object-by hamilton o6)(visited-object-by gauss o6))"

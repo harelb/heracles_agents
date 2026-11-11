@@ -53,6 +53,8 @@ domain_description: |
       - forbidden-edge: forbids the robot from traversing the edge between two points.
         Example: [["forbidden-edge", "?t1", "?t2"]] blocks the corridor between places ?t1 and ?t2.
         NOTE: forbidden-edge is unordered. You only need ONE direction, not both.
+      - use-robots: only the robots it names act in this goal; the others get no actions.
+        Example: [["use-robots", "hamilton", "euclid"]]. The team goal rules say when to use it.
 
       ALL constraint IDs must be LOWERCASE, and must be nodeSymbols that exist in the database. A constraint naming an ID that is not in the graph is silently ignored, so the robot will not avoid it -- always confirm the ID with run_cypher_query first.
 
