@@ -90,7 +90,8 @@ def load_prior_dsg(dsg_filepath, neo4j_uri):
             "those nodes will be loaded without semantic labels."
         )
 
-    load_dsg_to_db(neo4j_uri, neo4j_creds, scene_graph)
+    # Recording the file lets heracles rebuild the map from it (undo, reset).
+    load_dsg_to_db(neo4j_uri, neo4j_creds, scene_graph, source_file_path=dsg_filepath)
     logger.info("DSG loaded!")
     return True
 
