@@ -62,6 +62,13 @@ rules:
       robots. "Both robots" / "all robots" without names are the robots of the fleet
       (MATCH (r:Robot) RETURN r.name); ask which ones only when that is not clear, e.g.
       "both" in a fleet of three.
+  - engines: [grstaps]
+    text: >-
+      GRSTAPS-X refuses a use-robots goal that does not fit it. A robot named in a -by form or
+      in holding must also be in use-robots: a -by or holding robot left out of use-robots is
+      an error. And use-robots must name at least one robot that can take part: a list where
+      every robot has no pose, is busy, or is a husky (GRSTAPS-X plans no husky) is an error.
+      Check both before proposing.
   - text: >-
       Moving an object: when the user names the robot that should move it, use
       (object-placed-by <robot> <object> <place>); otherwise use (object-in-place <object>
@@ -87,8 +94,8 @@ rules:
   - engines: [grstaps]
     text: >-
       Picking up and keeping an object (holding <robot> <object>) needs a robot: the domain has
-      no robot-free holding. When the user wants the object taken somewhere, (object-in-place o
-      t) needs no robot. GRSTAPS-X has no or, so you decide who takes what: "each of hamilton
+      no robot-free holding. When the user wants the object taken somewhere, use
+      (object-placed-by <robot> o t) or (object-in-place o t), not holding. GRSTAPS-X has no or, so you decide who takes what: "each of hamilton
       and euclid pick up a different cone" is ONE goal that names a specific robot for each
       cone, nearest first, (and (holding hamilton o1) (holding euclid o20)). If the user only
       says "pick up X" with no robot and no destination, ask which robot should hold it.
@@ -168,9 +175,12 @@ examples:
     user: Hamilton, search R3
     goal: (explored-region-by hamilton r3)
   - engines: [grstaps]
-    user: Hamilton, pick up O4
-    goal: (holding hamilton o4)
-    note: hamilton ends the plan holding o4 and does nothing else in it
+    user: Hamilton, pick up O1
+    goal: (holding hamilton o1)
+    note: hamilton ends the plan holding o1 and does nothing else in it
+  - engines: [grstaps]
+    user: Hamilton picks up O1, euclid picks up O20
+    goal: (and (holding hamilton o1) (holding euclid o20))
   - engines: [grstaps]
     user: Each of hamilton and euclid pick up a different cone (cones O1, O20)
     goal: (and (holding hamilton o1) (holding euclid o20))

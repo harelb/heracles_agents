@@ -241,7 +241,17 @@ def test_grstaps_rules_take_holding_and_use_robots():
     assert "GRSTAPS-X has no or" in text
     assert "names a specific robot for each cone" in text
     assert _EACH_CONE in text
-    assert '- "Hamilton, pick up O4": (holding hamilton o4)' in text
+    assert '- "Hamilton, pick up O1": (holding hamilton o1)' in text
+    assert (
+        '- "Hamilton picks up O1, euclid picks up O20": '
+        "(and (holding hamilton o1) (holding euclid o20))"
+    ) in text
+    assert "(object-placed-by <robot> o t) or (object-in-place o t), not holding" in text
+    assert "ask which robot should hold it" in text
+    # the GRSTAPS-X use-robots errors
+    assert "a -by or holding robot left out of use-robots is an error" in text
+    assert "is busy, or is a husky (GRSTAPS-X plans no husky) is an error" in text
+    assert "has no pose" in text
     examples = text.split("Examples (")[1]
     assert "(or " not in examples
     # the limits, explained up front
@@ -278,3 +288,26 @@ def test_grstaps_examples_hold_with_a_named_robot_per_object():
     assert "(and (holding hamilton o1)(holding euclid o20))" in goals
     assert '[[\"use-robots\", \"hamilton\", \"euclid\"]]' in goals
     assert "(or " not in goals and "(at-place" not in goals and "(at-object" not in goals
+
+
+@pytest.mark.parametrize("names", [None, {"send_pddl_goal_with_constraints": "propose_goal"}])
+def test_grstaps_repair_goal_prompt_supports_holding_and_use_robots(names):
+    text = prompts.repair_goal_prompt("grstaps", names=names)
+    # supported
+    assert "(holding ?r ?o): Robot ?r picks object ?o up" in text
+    assert "- use-robots: only the robots it names act in this goal" in text
+    assert "plus a use-robots constraint naming exactly" in text
+    assert "to move an object) or holding." in text
+    assert "has no use-robots" not in text and "no use-robots constraint" not in text
+    unsupported = text.split("This planner does NOT support these")[1].split("To find")[0]
+    assert "holding" not in unsupported
+    # still refused
+    assert '- "or".' in unsupported and "- at-place / at-object" in unsupported
+    assert "GRSTAPS-X cannot hold a robot at a final position" in text
+
+
+def test_chatdsg_repair_grstaps_builds_from_the_package_text():
+    chat = prompts.repair_chat_prompt("grstaps")
+    rules = prompts.team_goal_rules("grstaps")
+    assert rules in chat["system"]
+    assert "a -by or holding robot left out of use-robots is an error" in chat["system"]
